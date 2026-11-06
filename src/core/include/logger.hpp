@@ -14,6 +14,7 @@
 #include <memory>
 #include <mscclpp/env.hpp>
 #include <mscclpp/errors.hpp>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -80,6 +81,15 @@ constexpr std::string_view logSubsysToString(LogSubsys subsys) {
 }
 
 std::string timestamp(const char* format = "%Y-%m-%d %X");
+inline constexpr char kLoggerHeader[] = "%@ %@ %@ %@ %@ %@:%@ ";
+
+using LogHandler = void (*)(const char*);
+void setLogHandler(LogHandler handler);
+LogHandler getLogHandler();
+void defaultLogHandler(const char* msg);
+std::string resolveLogLevel(const char* configured, const std::string& legacy);
+std::string resolveLogSubsystems(const char* configured, const std::string& legacy);
+std::string resolveLogFile(const char* configured, const std::string& legacy);
 
 }  // namespace detail
 
@@ -88,16 +98,12 @@ using LogSubsysSet = std::bitset<static_cast<std::size_t>(LogSubsys::COUNT)>;
 
 class Logger {
  private:
-  // Overload for string literals: const char(&)[N]
-  template <std::size_t N>
-  std::string toStringHelper(const char (&value)[N]) const {
-    // N includes the terminating '\0'; std::string(value) stops at '\0'
-    return std::string(value);
-  }
-
   template <typename T>
   std::string toStringHelper(T&& value) const {
-    if constexpr (std::is_same_v<std::decay_t<T>, std::string_view>) {
+    if constexpr (std::is_same_v<std::decay_t<T>, const char*> || std::is_same_v<std::decay_t<T>, char*>) {
+      const char* text = value;
+      return text ? std::string(text) : "(null)";
+    } else if constexpr (std::is_same_v<std::decay_t<T>, std::string_view>) {
       return std::string(value);
     } else if constexpr (std::is_same_v<std::decay_t<T>, std::string>) {
       return std::forward<T>(value);
@@ -119,9 +125,11 @@ class Logger {
   char delimiter_;
   LogSubsysSet subsysSet_;
   std::ofstream logFileStream_;
+  std::mutex outputMutex_;
 
  public:
-  Logger(const std::string& header, const LogLevel level, const char delimiter);
+  Logger(const std::string& header, const LogLevel level, const char delimiter, LogSubsysSet subsysSet,
+         const std::string& logFile);
 
   const std::string& header() const { return header_; }
 
@@ -183,14 +191,15 @@ class Logger {
   void log(Args&&... args) {
     auto msg = message<true>(std::forward<Args>(args)...);
     if (msg.empty()) return;
-    if (logFileStream_.is_open()) {
-      logFileStream_ << msg;
-      logFileStream_.flush();
+    auto handler = detail::getLogHandler();
+    if (handler) {
+      handler(msg.c_str());
     } else {
-      // Fallback to stdout if no file stream
-      std::cout << msg;
+      writeDefault(msg);
     }
   }
+
+  void writeDefault(const std::string& msg);
 };
 
 Logger& logger(const std::string& header, const std::string& level, char delimiter);
@@ -203,12 +212,12 @@ Logger& logger(const std::string& header, const std::string& level, char delimit
       ::mscclpp::detail::logSubsysToString(subsys__), ::mscclpp::detail::filenameFromPath(__FILE__), __LINE__, \
       __VA_ARGS__
 
-#define LOGGER_LOG(level__, subsys__, ...)                                                      \
-  do {                                                                                          \
-    auto& logger__ = ::mscclpp::logger("%@ %@ %@ %@ %@ %@:%@ ", ::mscclpp::env()->logLevel, 0); \
-    if (logger__.shouldLog(level__, subsys__)) {                                                \
-      logger__.log(LOGGER_BUILD_ARGS(level__, subsys__, __VA_ARGS__));                          \
-    }                                                                                           \
+#define LOGGER_LOG(level__, subsys__, ...)                                                               \
+  do {                                                                                                   \
+    auto& logger__ = ::mscclpp::logger(::mscclpp::detail::kLoggerHeader, ::mscclpp::env()->logLevel, 0); \
+    if (logger__.shouldLog(level__, subsys__)) {                                                         \
+      logger__.log(LOGGER_BUILD_ARGS(level__, subsys__, __VA_ARGS__));                                   \
+    }                                                                                                    \
   } while (0)
 
 #define LOG(level__, subsys__, ...) LOGGER_LOG(level__, subsys__, __VA_ARGS__)
@@ -219,7 +228,7 @@ Logger& logger(const std::string& header, const std::string& level, char delimit
 #define THROW(subsys__, exception__, errorCode__, ...)                                                           \
   do {                                                                                                           \
     const auto errorCodeCopy__ = errorCode__;                                                                    \
-    throw exception__(::mscclpp::logger("%@ %@ %@ %@ %@ %@:%@ ", ::mscclpp::env()->logLevel, 0)                  \
+    throw exception__(::mscclpp::logger(::mscclpp::detail::kLoggerHeader, ::mscclpp::env()->logLevel, 0)         \
                           .message<false>(LOGGER_BUILD_ARGS(::mscclpp::LogLevel::ERROR, subsys__, __VA_ARGS__)), \
                       errorCodeCopy__);                                                                          \
   } while (0)

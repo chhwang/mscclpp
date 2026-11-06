@@ -14,7 +14,7 @@
 #include <mscclpp/errors.hpp>
 #include <vector>
 
-#include "debug.h"
+#include "logger.hpp"
 
 namespace mscclpp {
 
@@ -133,7 +133,7 @@ void UnixSocketServer::start() {
       if (abortFlag_ && *abortFlag_) {
         return;
       }
-      WARN("Unix socket server main loop exited with exception: %s", e.what());
+      WARN(CONN, "Unix socket server main loop exited with exception: ", e.what());
       throw e;
     }
   });
@@ -142,7 +142,7 @@ void UnixSocketServer::start() {
 void UnixSocketServer::stop() {
   *abortFlag_ = 1;
   if (mainThread_.joinable()) {
-    INFO(MSCCLPP_INIT, "Stopping unix socket server");
+    INFO(CONN, "Stopping unix socket server");
     mainThread_.join();
   }
   ::close(listenUnixSockFd_);
@@ -153,7 +153,7 @@ void UnixSocketServer::stop() {
 }
 
 int UnixSocketServer::registerFd(int fd) {
-  INFO(MSCCLPP_P2P, "Registered fd %d", fd);
+  INFO(CONN, "Registered fd ", fd);
   std::lock_guard<std::mutex> lock(mutex_);
   if (fdSet_.count(fd) != 0) {
     throw Error("Fd is already registered: " + std::to_string(fd), ErrorCode::InvalidUsage);
@@ -163,7 +163,7 @@ int UnixSocketServer::registerFd(int fd) {
 }
 
 void UnixSocketServer::unregisterFd(int fd) {
-  INFO(MSCCLPP_P2P, "Unregistered fd %d", fd);
+  INFO(CONN, "Unregistered fd ", fd);
   std::lock_guard<std::mutex> lock(mutex_);
   fdSet_.erase(fd);
 }
@@ -191,7 +191,7 @@ void UnixSocketServer::mainLoop(int listenUnixSockFd) {
       if (abortFlag_ && *abortFlag_) {
         break;
       }
-      WARN("poll() failed on unix socket server: %s", std::strerror(errno));
+      WARN(CONN, "poll() failed on unix socket server: ", std::strerror(errno));
       throw SysError("poll() failed on unix socket server", errno);
     }
     if (rc == 0) {
@@ -216,7 +216,7 @@ void UnixSocketServer::mainLoop(int listenUnixSockFd) {
         if (abortFlag_ && *abortFlag_) {
           break;
         }
-        WARN("accept() failed for unix socket: %s", std::strerror(errno));
+        WARN(CONN, "accept() failed for unix socket: ", std::strerror(errno));
         throw SysError("accept() failed for unix socket", errno);
       }
     }
@@ -234,7 +234,7 @@ void UnixSocketServer::mainLoop(int listenUnixSockFd) {
           std::lock_guard<std::mutex> lock(mutex_);
           auto it = fdSet_.find(fd);
           if (it == fdSet_.end()) {
-            WARN("Requested fd %d not found, size of fdSet_ is %zu", fd, fdSet_.size());
+            WARN(CONN, "Requested fd ", fd, " not found, size of fdSet_ is ", fdSet_.size());
             throw Error("Requested fd not found: " + std::to_string(fd), ErrorCode::InvalidUsage);
           }
           fdToSend = *it;
@@ -270,7 +270,7 @@ void UnixSocketClient::reset() {
 UnixSocketClient::~UnixSocketClient() { reset(); }
 
 int UnixSocketClient::requestFd(const std::string& socketPath, uint32_t fdId) {
-  INFO(MSCCLPP_P2P, "Requesting fdId %u from unix socket server at %s", fdId, socketPath.c_str());
+  INFO(CONN, "Requesting fdId ", fdId, " from unix socket server at ", socketPath);
 
   int connectedFd = -1;
   {
@@ -293,7 +293,7 @@ int UnixSocketClient::requestFd(const std::string& socketPath, uint32_t fdId) {
   addr.sun_family = AF_UNIX;
   std::strncpy(addr.sun_path, socketPath.c_str(), sizeof(addr.sun_path) - 1);
 
-  INFO(MSCCLPP_P2P, "Connecting to unix socket server at %s", socketPath.c_str());
+  INFO(CONN, "Connecting to unix socket server at ", socketPath);
   if (connect(connectedFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
     ::close(connectedFd);
     throw SysError("connect() failed for unix socket to " + socketPath, errno);

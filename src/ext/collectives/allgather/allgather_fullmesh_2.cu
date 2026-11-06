@@ -3,7 +3,7 @@
 
 #include "allgather/allgather_fullmesh_2.hpp"
 #include "collective_utils.hpp"
-#include "debug.h"
+#include "logger.hpp"
 
 namespace mscclpp {
 namespace collective {
@@ -163,18 +163,14 @@ CommResult AllgatherFullmesh2::allgatherKernelFunc(const std::shared_ptr<void> c
   const int nWarp = numBlocksAndThreads.first * numBlocksAndThreads.second / WARP_SIZE;
   if (numBlocksAndThreads.first > nChannelsPerConnection_ || numBlocksAndThreads.first <= 0 ||
       numBlocksAndThreads.second <= 0) {
-    WARN(
-        "AllgatherFullmesh2: number of blocks must be a positive multiple of peer count and no more than %d, threads "
-        "per block must be positive; got nBlocks=%d, nThreadsPerBlock=%d, nPeers=%d",
-        nChannelsPerConnection_, numBlocksAndThreads.first, numBlocksAndThreads.second, nPeer);
+    WARN(ALGO, "AllgatherFullmesh2: number of blocks must be a positive multiple of peer count and no more than ",
+         nChannelsPerConnection_, ", threads per block must be positive; got nBlocks=", numBlocksAndThreads.first,
+         ", nThreadsPerBlock=", numBlocksAndThreads.second, ", nPeers=", nPeer);
     return CommResult::CommInvalidArgument;
   }
   if (nWarp < nPeer) {
-    WARN(
-        "AllgatherFullmesh2: total number of warps must be no less than peer count; got nBlocks=%d, "
-        "nThreadsPerBlock=%d, "
-        "nPeers=%d",
-        numBlocksAndThreads.first, numBlocksAndThreads.second, nPeer);
+    WARN(ALGO, "AllgatherFullmesh2: total number of warps must be no less than peer count; got nBlocks=",
+         numBlocksAndThreads.first, ", nThreadsPerBlock=", numBlocksAndThreads.second, ", nPeers=", nPeer);
     return CommResult::CommInvalidArgument;
   }
 
@@ -190,7 +186,7 @@ CommResult AllgatherFullmesh2::allgatherKernelFunc(const std::shared_ptr<void> c
   }
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
-    WARN("AllgatherFullmesh2 failed with error %d", err);
+    WARN(ALGO, "AllgatherFullmesh2 failed with error ", static_cast<int>(err));
     return CommResult::CommUnhandledCudaError;
   }
   return CommResult::CommSuccess;

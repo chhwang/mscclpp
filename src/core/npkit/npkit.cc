@@ -8,7 +8,7 @@
 #include <mscclpp/gpu.hpp>
 #include <mscclpp/npkit/npkit.hpp>
 
-#include "debug.h"
+#include "logger.hpp"
 
 uint64_t NpKit::rank_ = 0;
 
@@ -84,7 +84,7 @@ void NpKit::Init(int rank) {
   cpu_timestamp_update_thread_should_stop_ = false;
   cpu_timestamp_update_thread_ = std::make_unique<std::thread>(CpuTimestampUpdateThread);
 #else
-  WARN("NpKit::Init(%d) : MSCCLPP library was not built with NPKit enabled.", rank);
+  WARN(mscclpp::GPU, "NpKit::Init(", rank, ") : MSCCLPP library was not built with NPKit enabled.");
 #endif
 }
 
@@ -170,7 +170,7 @@ void NpKit::Dump(const std::string& dump_dir) {
   gpu_clock_rate_file.write(clock_rate_str.c_str(), clock_rate_str.length());
   gpu_clock_rate_file.close();
 #else
-  WARN("NpKit::Dump(%s) : MSCCLPP library was not built with NPKit enabled.", dump_dir.c_str());
+  WARN(mscclpp::GPU, "NpKit::Dump(", dump_dir, ") : MSCCLPP library was not built with NPKit enabled.");
 #endif
 }
 

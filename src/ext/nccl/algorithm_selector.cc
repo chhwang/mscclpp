@@ -7,7 +7,7 @@
 #include <mscclpp/utils.hpp>
 
 #include "collective_utils.hpp"
-#include "debug.h"
+#include "logger.hpp"
 
 namespace mscclpp {
 namespace nccl {
@@ -171,7 +171,7 @@ std::shared_ptr<Algorithm> selectMultiNodeAlgorithm(
   // 4. Network topology awareness
 
   // For now, return nullptr to fallback to NCCL/RCCL
-  INFO(MSCCLPP_NCCL, "Multi-node collective not yet supported, fallback to nccl/rccl");
+  INFO(NCCL, "Multi-node collective not yet supported, fallback to nccl/rccl");
   return nullptr;
 }
 

@@ -6,7 +6,7 @@
 #include "allreduce/allreduce_nvls_block_pipeline.hpp"
 #include "allreduce/common.hpp"
 #include "collective_utils.hpp"
-#include "debug.h"
+#include "logger.hpp"
 
 namespace mscclpp {
 namespace collective {
@@ -190,12 +190,12 @@ CommResult AllreduceNvlsBlockPipeline::allreduceKernelFunc(
     [[maybe_unused]] const std::unordered_map<std::string, uintptr_t>& extras, DataType accumDtype) {
   auto ctx = std::static_pointer_cast<AlgorithmCtx>(ctx_void);
   if (isNativeFp8DataType(dtype) && !fp8NvlsSupported_) {
-    WARN("FP8 NVLS allreduce requires device support for FP8 multimem reduction.");
+    WARN(ALGO, "FP8 NVLS allreduce requires device support for FP8 multimem reduction.");
     return CommResult::CommInvalidArgument;
   }
   AllreduceFunc allreduce = dispatch<NvlsBlockPipelineAdapter>(op, dtype, accumDtype);
   if (!allreduce) {
-    WARN("Unsupported operation or data type for allreduce, dtype=%d", static_cast<int>(dtype));
+    WARN(ALGO, "Unsupported operation or data type for allreduce, dtype=", static_cast<int>(dtype));
     return CommResult::CommInvalidArgument;
   }
   std::pair<int, int> blockAndThreadNum = {nBlocks, nThreadsPerBlock};
@@ -207,7 +207,7 @@ CommResult AllreduceNvlsBlockPipeline::allreduceKernelFunc(
                                 ctx->rank, ctx->nRanksPerIpcDomain, ctx->worldSize, inputSize, stream, nullptr, 0, 0,
                                 blockAndThreadNum.first, blockAndThreadNum.second);
   if (error != cudaSuccess) {
-    WARN("AllreduceNvlsBlockPipeline failed with error: %s", cudaGetErrorString(error));
+    WARN(ALGO, "AllreduceNvlsBlockPipeline failed with error: ", cudaGetErrorString(error));
     return CommResult::CommUnhandledCudaError;
   }
   return CommResult::CommSuccess;
