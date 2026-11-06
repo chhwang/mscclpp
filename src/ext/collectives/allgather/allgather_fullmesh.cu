@@ -3,7 +3,7 @@
 
 #include "allgather/allgather_fullmesh.hpp"
 #include "collective_utils.hpp"
-#include "debug.h"
+#include "logger.hpp"
 
 namespace mscclpp {
 namespace collective {
@@ -126,14 +126,13 @@ CommResult AllgatherFullmesh::allgatherKernelFunc(const std::shared_ptr<void> ct
     numBlocksAndThreads = {kMaxBlocks, kMaxThreadsPerBlock};
   }
   if (numBlocksAndThreads.first > kMaxBlocks || numBlocksAndThreads.second > kMaxThreadsPerBlock) {
-    WARN(
-        "AllgatherFullmesh: number of blocks must be no more than %d and threads per block must be no more than %d; "
-        "got nBlocks=%d, nThreadsPerBlock=%d",
-        kMaxBlocks, kMaxThreadsPerBlock, numBlocksAndThreads.first, numBlocksAndThreads.second);
+    WARN(ALGO, "AllgatherFullmesh: number of blocks must be no more than ", kMaxBlocks,
+         " and threads per block must be no more than ", kMaxThreadsPerBlock,
+         "; got nBlocks=", numBlocksAndThreads.first, ", nThreadsPerBlock=", numBlocksAndThreads.second);
     return CommResult::CommInvalidArgument;
   }
   if (numBlocksAndThreads.second % WARP_SIZE != 0) {
-    WARN("AllgatherFullmesh: threads per block must be a multiple of warp size %d", WARP_SIZE);
+    WARN(ALGO, "AllgatherFullmesh: threads per block must be a multiple of warp size ", WARP_SIZE);
     return CommResult::CommInvalidArgument;
   }
   if ((char*)input == (char*)output + rank * inputSize) {
@@ -147,7 +146,7 @@ CommResult AllgatherFullmesh::allgatherKernelFunc(const std::shared_ptr<void> ct
   }
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
-    WARN("AllgatherFullmesh failed with error %d", err);
+    WARN(ALGO, "AllgatherFullmesh failed with error ", static_cast<int>(err));
     return mscclpp::CommResult::CommInternalError;
   }
   return mscclpp::CommResult::CommSuccess;

@@ -4,7 +4,7 @@
 #include "allreduce/allreduce_fullmesh.hpp"
 #include "allreduce/common.hpp"
 #include "collective_utils.hpp"
-#include "debug.h"
+#include "logger.hpp"
 
 namespace mscclpp {
 namespace collective {
@@ -221,13 +221,13 @@ CommResult AllreduceFullmesh::allreduceKernelFunc(
 
   AllreduceFunc allreduce = dispatch<AllreduceAllconnectAdapter>(op, dtype, accumDtype);
   if (!allreduce) {
-    WARN("Unsupported operation or data type for allreduce: op=%d, dtype=%d", static_cast<int>(op),
-         static_cast<int>(dtype));
+    WARN(ALGO, "Unsupported operation or data type for allreduce: op=", static_cast<int>(op),
+         ", dtype=", static_cast<int>(dtype));
     return CommResult::CommInvalidArgument;
   }
   std::pair<int, int> numBlocksAndThreads = {nBlocks, nThreadsPerBlock};
   if (numBlocksAndThreads.first > 64) {
-    WARN("AllreduceFullmesh: number of blocks exceeds maximum supported blocks, which is 64");
+    WARN(ALGO, "AllreduceFullmesh: number of blocks exceeds maximum supported blocks, which is 64");
     return mscclpp::CommResult::CommInvalidArgument;
   }
   if (numBlocksAndThreads.first == 0 || numBlocksAndThreads.second == 0) {
@@ -238,7 +238,7 @@ CommResult AllreduceFullmesh::allreduceKernelFunc(
                 nullptr, nullptr, 0, channelOutOffset, 0, ctx->rank, ctx->nRanksPerIpcDomain, ctx->worldSize, inputSize,
                 stream, nullptr, 0, 0, numBlocksAndThreads.first, numBlocksAndThreads.second);
   if (error != cudaSuccess) {
-    WARN("AllreduceAllconnect failed with error: %s", cudaGetErrorString(error));
+    WARN(ALGO, "AllreduceAllconnect failed with error: ", cudaGetErrorString(error));
     return CommResult::CommUnhandledCudaError;
   }
   return CommResult::CommSuccess;

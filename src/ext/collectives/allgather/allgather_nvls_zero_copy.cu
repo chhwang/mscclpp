@@ -7,7 +7,7 @@
 
 #include "allgather/allgather_nvls_zero_copy.hpp"
 #include "collective_utils.hpp"
-#include "debug.h"
+#include "logger.hpp"
 
 namespace mscclpp {
 namespace collective {
@@ -103,7 +103,7 @@ CommResult AllgatherNvls::allgatherKernelFunc(const std::shared_ptr<void> ctx_vo
                                               size_t inputSize, cudaStream_t stream, int nBlocks, int nThreadsPerBlock,
                                               const std::unordered_map<std::string, uintptr_t>&) {
   if (!symmetricMemory_) {
-    WARN("AllgatherNvls requires symmetric memory for now.");
+    WARN(ALGO, "AllgatherNvls requires symmetric memory for now.");
     return CommResult::CommInvalidArgument;
   }
   auto ctx = std::static_pointer_cast<AlgorithmCtx>(ctx_void);
@@ -125,7 +125,7 @@ CommResult AllgatherNvls::allgatherKernelFunc(const std::shared_ptr<void> ctx_vo
     }
   }
   if (numBlocksAndThreads.first > MAX_NBLOCKS) {
-    WARN("Number of blocks exceeds maximum supported value of %d", MAX_NBLOCKS);
+    WARN(ALGO, "Number of blocks exceeds maximum supported value of ", MAX_NBLOCKS);
     return CommResult::CommInvalidArgument;
   }
 
@@ -134,7 +134,7 @@ CommResult AllgatherNvls::allgatherKernelFunc(const std::shared_ptr<void> ctx_vo
       ctx->nRanksPerIpcDomain);
   cudaError_t error = cudaGetLastError();
   if (error != cudaSuccess) {
-    WARN("AllgatherNvls failed with error: %s", cudaGetErrorString(error));
+    WARN(ALGO, "AllgatherNvls failed with error: ", cudaGetErrorString(error));
     return CommResult::CommUnhandledCudaError;
   }
   return CommResult::CommSuccess;

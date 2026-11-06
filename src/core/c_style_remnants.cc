@@ -3,11 +3,14 @@
 
 #include "api.h"
 #include "debug.h"
+#include "logger.hpp"
 
-MSCCLPP_API void mscclppDefaultLogHandler(const char* msg) { mscclppDebugDefaultLogHandler(msg); }
+MSCCLPP_API void mscclppDefaultLogHandler(const char* msg) { mscclpp::detail::defaultLogHandler(msg); }
 
 MSCCLPP_API mscclppResult_t mscclppSetLogHandler(mscclppLogHandler_t handler) {
-  return mscclppDebugSetLogHandler(handler);
+  if (!handler) return mscclppInvalidArgument;
+  mscclpp::detail::setLogHandler(handler);
+  return mscclppSuccess;
 }
 
 MSCCLPP_API const char* mscclppGetErrorString(mscclppResult_t code) {

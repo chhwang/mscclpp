@@ -4,6 +4,7 @@
 #include "logger.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -113,11 +114,11 @@ std::string timestamp(const char* format) {
 
 static std::once_flag globalLoggerInitFlag;
 static std::shared_ptr<Logger> globalLoggerPtr;
+static std::atomic<detail::LogHandler> logHandler{nullptr};
 
-Logger::Logger(const std::string& header, const LogLevel level, const char delimiter)
-    : header_(header), level_(level), delimiter_(delimiter) {
-  subsysSet_ = stringToLogSubsysSet(env()->logSubsys);
-  const std::string& path = env()->logFile;
+Logger::Logger(const std::string& header, const LogLevel level, const char delimiter, LogSubsysSet subsysSet,
+               const std::string& path)
+    : header_(header), level_(level), delimiter_(delimiter), subsysSet_(subsysSet) {
   if (!path.empty()) {
     logFileStream_.open(path, std::ios::out | std::ios::app);
     if (!logFileStream_.is_open()) {
@@ -127,12 +128,42 @@ Logger::Logger(const std::string& header, const LogLevel level, const char delim
   }
 }
 
+void Logger::writeDefault(const std::string& msg) {
+  std::lock_guard<std::mutex> lock(outputMutex_);
+  if (logFileStream_.is_open()) {
+    logFileStream_ << msg;
+    logFileStream_.flush();
+  } else {
+    // Fallback to stdout if no file stream
+    std::cout << msg;
+    std::cout.flush();
+  }
+}
+
 Logger& logger(const std::string& header, const std::string& levelStr, char delimiter) {
   std::call_once(globalLoggerInitFlag, [&]() {
+    auto environment = env();
     LogLevel level = stringToLogLevel(levelStr);
-    globalLoggerPtr = std::make_shared<Logger>(header, level, delimiter);
+    LogSubsysSet subsysSet = stringToLogSubsysSet(environment->logSubsys);
+    globalLoggerPtr = std::make_shared<Logger>(header, level, delimiter, subsysSet, environment->logFile);
   });
   return *globalLoggerPtr;
 }
+
+namespace detail {
+
+void setLogHandler(LogHandler handler) {
+  (void)logger(detail::kLoggerHeader, env()->logLevel, 0);
+  logHandler.store(handler, std::memory_order_release);
+}
+
+LogHandler getLogHandler() { return logHandler.load(std::memory_order_acquire); }
+
+void defaultLogHandler(const char* msg) {
+  if (!msg) return;
+  logger(detail::kLoggerHeader, env()->logLevel, 0).writeDefault(std::string(msg));
+}
+
+}  // namespace detail
 
 }  // namespace mscclpp

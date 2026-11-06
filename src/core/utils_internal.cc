@@ -20,7 +20,7 @@
 #include <sstream>
 #include <string>
 
-#include "debug.h"
+#include "logger.hpp"
 
 // Throw upon SIGALRM.
 static void sigalrmTimeoutHandler(int) {
@@ -137,7 +137,7 @@ uint64_t computeHostHash(void) {
 
   // Make sure the string is terminated
   hostHash[sizeof(hostHash) - 1] = '\0';
-  TRACE(MSCCLPP_INIT, "unique hostname '%s'", hostHash);
+  DEBUG(ENV, "unique hostname '", hostHash, "'");
   return getHash(hostHash, strlen(hostHash));
 }
 
@@ -165,7 +165,7 @@ uint64_t computePidHash(void) {
   if (len < 0) len = 0;
 
   pname[plen + len] = '\0';
-  TRACE(MSCCLPP_INIT, "unique PID '%s'", pname);
+  DEBUG(ENV, "unique PID '", pname, "'");
 
   return getHash(pname, strlen(pname));
 }
@@ -351,7 +351,7 @@ std::shared_ptr<uint64_t> TokenPool::getToken() {
     for (int bit = 0; bit < UINT64_WIDTH; bit++) {
       if (holes & (1UL << bit)) {
         allocationMap_[i].set(bit);
-        INFO(MSCCLPP_ALLOC, "TokenPool allocated token at addr %p", baseAddr_ + i * UINT64_WIDTH + bit);
+        INFO(GPU, "TokenPool allocated token at addr ", static_cast<void*>(baseAddr_ + i * UINT64_WIDTH + bit));
         return std::shared_ptr<uint64_t>(baseAddr_ + i * UINT64_WIDTH + bit, deleter);
       }
     }

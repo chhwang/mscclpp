@@ -19,30 +19,34 @@ std::shared_ptr<Env> env();
 /// Use the env() function to get the environment object.
 class Env {
  public:
-  /// Env name: `MSCCLPP_DEBUG`. The debug flag, one of VERSION, WARN, INFO, ABORT, or TRACE. Unset by default.
+  /// Legacy Env name: `MSCCLPP_DEBUG`. Accepted values VERSION, WARN, INFO, ABORT, or TRACE are mapped to the
+  /// corresponding `MSCCLPP_LOG_LEVEL` when the new setting is unset. `TRACE` maps to DEBUG, `VERSION` maps to
+  /// ERROR, and `ABORT` maps to INFO. This field retains the raw legacy value.
   const std::string debug;
 
-  /// Env name: `MSCCLPP_DEBUG_SUBSYS`. The debug subsystem, a comma-separated list of subsystems to enable
-  /// debug logging for.
-  /// If the first character is '^', it inverts the mask, i.e., enables all subsystems except those specified.
-  /// Possible values are INIT, COLL, P2P, SHM, NET, GRAPH, TUNING, ENV, ALLOC, CALL, MSCCLPP_EXECUTOR, MSCCLPP_NCCL,
-  /// ALL. Unset by default.
+  /// Legacy Env name: `MSCCLPP_DEBUG_SUBSYS`. When `MSCCLPP_LOG_SUBSYS` is unset, this comma-separated list is
+  /// translated to logger subsystems. INIT maps to ENV, NET, and CONN; COLL and TUNING map to ALGO; P2P maps to
+  /// CONN; SHM maps to GPU and CONN; GRAPH and EXECUTOR map to EXEC; ALLOC maps to GPU. NET, ENV, NCCL, and ALL
+  /// retain their names. CALL has no corresponding logger subsystem. A leading '^' excludes the translated names.
+  /// If unset, the logger's ALL-subsystem default is retained. This field keeps the raw legacy value.
   const std::string debugSubsys;
 
-  /// Env name: `MSCCLPP_DEBUG_FILE`. A file path to write debug logs to. Unset by default.
+  /// Legacy Env name: `MSCCLPP_DEBUG_FILE`. Used as the `MSCCLPP_LOG_FILE` fallback when the new setting is unset.
+  /// The legacy `%h`, `%p`, and `%%` path substitutions are retained. This field keeps the raw legacy value.
   const std::string debugFile;
 
-  /// Env name: `MSCCLPP_LOG_LEVEL`. One of DEBUG, INFO, WARN, or ERROR, in the order of severity
-  /// (lower to higher level). A lower level is a superset of a higher level. Default is ERROR.
+  /// Env name: `MSCCLPP_LOG_LEVEL`. One of DEBUG, INFO, WARN, or ERROR, in order of severity (lower to higher).
+  /// A lower level includes higher-severity messages. It takes precedence over the legacy `MSCCLPP_DEBUG` alias.
+  /// Default is ERROR.
   const std::string logLevel;
 
-  /// Env name: `MSCCLPP_LOG_SUBSYS`. The log subsystem, a comma-separated list of subsystems to enable
-  /// logging for. Possible values are ENV, GPU, NET, CONN, EXEC, NCCL, ALGO, ALL (default).
-  /// If the first character is '^', it inverts the mask, i.e., enables all subsystems except those specified.
-  /// For example, "^NET,CONN" enables all subsystems except NET and CONN.
+  /// Env name: `MSCCLPP_LOG_SUBSYS`. The log subsystem, a comma-separated list of subsystems to enable logging for.
+  /// Possible values are ENV, GPU, NET, CONN, EXEC, NCCL, ALGO, ALL (default). A leading '^' enables all subsystems
+  /// except those specified. This setting takes precedence over the legacy `MSCCLPP_DEBUG_SUBSYS` alias.
   const std::string logSubsys;
 
-  /// Env name: `MSCCLPP_LOG_FILE`. A file path to write log messages to. Unset by default.
+  /// Env name: `MSCCLPP_LOG_FILE`. A file path to write log messages to. It takes precedence over the legacy
+  /// `MSCCLPP_DEBUG_FILE` alias. Unset by default.
   const std::string logFile;
 
   /// Env name: `MSCCLPP_HCA_DEVICES`. A comma-separated list of HCA devices to use for IB transport. i-th device

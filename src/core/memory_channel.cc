@@ -4,7 +4,6 @@
 #include <mscclpp/memory_channel.hpp>
 
 #include "api.h"
-#include "debug.h"
 
 namespace mscclpp {
 
