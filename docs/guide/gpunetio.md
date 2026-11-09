@@ -3,8 +3,8 @@
 By default, `PortChannel` operations over InfiniBand are pushed by GPU threads into a FIFO and posted to the NIC by the
 host proxy thread of a `ProxyService`. With the optional GPUNetIO backend, GPU threads build the RDMA work requests and
 ring the NIC doorbell themselves through [DOCA GPUNetIO](https://github.com/NVIDIA-DOCA/gpunetio) (GDAKI), removing
-the proxy from the data path. The host setup flow and `PortChannel` posting methods are unchanged; kernels provide
-shared-memory WQE scratch as shown below. The backend is selected per endpoint with `EndpointConfig::Ib::Mode::Device`.
+the proxy from the data path. The backend is selected per endpoint with `EndpointConfig::Ib::Mode::Device`.
+Construct a `PortChannel` without a proxy and call `deviceBackendHandle()` to obtain its GPU handle.
 
 ## Build
 
@@ -30,8 +30,7 @@ The GPUNetIO license is installed to `share/licenses/mscclpp/gpunetio`.
 ## Usage
 
 Create the connection with `EndpointConfig::Ib::Mode::Device` and construct the `PortChannel` directly from the
-semaphore and registered memories (`PortChannel<PortChannelBackend::Device>` is deduced automatically from the
-constructor; no `ProxyService` is needed):
+semaphore and registered memories. No `ProxyService` is needed:
 
 ```cpp
 mscclpp::EndpointConfig cfg;
@@ -45,8 +44,19 @@ auto remoteMem = communicator->recvMemory(remoteRank).get();
 
 auto semaphore = std::make_shared<mscclpp::PortDevice2DeviceSemaphore>(*communicator, connection);
 mscclpp::PortChannel channel(semaphore, remoteMem, localMem);
-auto deviceHandle = channel.deviceHandle();
+auto deviceHandle = channel.deviceBackendHandle();
 ```
+
+`BasePortChannel` and `PortChannel` are non-template host types for both backends. Their no-argument
+`deviceHandle()` method, nested `DeviceHandle` alias, and generic `mscclpp::deviceHandle(channel)` helper retain
+Host-backend behavior. Use `deviceBackendHandle()` explicitly for Device channels; it returns a
+`PortChannelDeviceHandleT<PortChannelBackend::Device>` (or the corresponding base handle).
+
+Extracting a Host handle from a Device channel, or a Device handle from a Host channel, throws
+`ErrorCode::InvalidUsage`. Both extraction methods reject default-constructed channels. Constructors reject null
+semaphore pointers, and Host constructors also reject a null proxy. Keep the channel alive while using its handle.
+Channel copies share semaphore ownership and progress; copying does not create an independent signal counter.
+Registered memory retains metadata, not ownership of application buffers, so keep those buffers alive too.
 
 Exclusive-mode operations automatically use internal shared-memory WQE slots for BlueFlame submission when the
 transfer fits `device_.blueFlameLimit` (default: 512 KiB) and the calling thread has a slot:
@@ -107,8 +117,9 @@ other, so `Block` and `Device` operations always ring the regular doorbell.
 ### Internal shared-memory slots
 
 `PortChannelDeviceHandleT<Backend, SmemSlots>` and `BasePortChannelDeviceHandleT<Backend, SmemSlots>` configure the
-internal shared-memory capacity at compile time. The default is 32 slots (2 KiB per CTA); use `channel.deviceHandle<8>()`
-for eight slots, or a capacity of zero to disable BlueFlame without allocating scratch.
+internal shared-memory capacity at compile time. The default is 32 slots (2 KiB per CTA); use
+`channel.deviceBackendHandle<8>()` for eight slots, or `channel.deviceBackendHandle<0>()` to disable BlueFlame
+without allocating scratch. The maximum is 1024 slots; larger capacities produce a compile-time error.
 
 The default slot index is the linear thread index, including all three block dimensions. Posting methods accept an
 optional `slotIdx` (`-1` selects the default); out-of-range indices fall back to regular doorbells. For example:
