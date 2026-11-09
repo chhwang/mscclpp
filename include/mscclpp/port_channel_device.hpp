@@ -209,18 +209,21 @@ struct BasePortChannelDeviceHandle {
 struct PortChannelDeviceHandle : public BasePortChannelDeviceHandle {
  public:
   /// Constructor. Operations on an unassigned handle fail explicitly.
-  MSCCLPP_HOST_DEVICE_INLINE constexpr PortChannelDeviceHandle() : BasePortChannelDeviceHandle(), bound_() {}
+  MSCCLPP_HOST_DEVICE_INLINE constexpr PortChannelDeviceHandle()
+      : BasePortChannelDeviceHandle(), boundKind_(Kind::Invalid), bound_() {}
   /// Construct a bound Host-proxy handle. Prefer host-channel extraction.
   MSCCLPP_HOST_DEVICE_INLINE constexpr PortChannelDeviceHandle(SemaphoreId id, Host2DeviceSemaphoreDeviceHandle receive,
                                                                FifoDeviceHandle fifo, MemoryId dst, MemoryId src,
                                                                uint64_t* flushDone)
-      : BasePortChannelDeviceHandle(id, receive, fifo, flushDone), bound_(HostBound{dst, src}) {}
+      : BasePortChannelDeviceHandle(id, receive, fifo, flushDone),
+        boundKind_(Kind::Host),
+        bound_(HostBound{dst, src}) {}
 
 #if defined(MSCCLPP_DEVICE_COMPILE)
   /// Put between the bound regions. slotIdx=-1 uses the linear CTA thread index for internal scratch.
   template <Concurrency Mode = Concurrency::Device, uint32_t SmemSlots = kDefaultSmemSlots>
   MSCCLPP_DEVICE_INLINE void put(uint64_t dstOffset, uint64_t srcOffset, uint64_t size, int slotIdx = -1) {
-    validate<Mode, SmemSlots>();
+    validateBound<Mode, SmemSlots>();
     if (kind_ == Kind::Host) {
       BasePortChannelDeviceHandle::put<Mode, SmemSlots>(bound_.host.dst, dstOffset, bound_.host.src, srcOffset, size);
     } else {
@@ -235,7 +238,7 @@ struct PortChannelDeviceHandle : public BasePortChannelDeviceHandle {
   /// Put and signal the remote peer.
   template <Concurrency Mode = Concurrency::Device, uint32_t SmemSlots = kDefaultSmemSlots>
   MSCCLPP_DEVICE_INLINE void putWithSignal(uint64_t dstOffset, uint64_t srcOffset, uint64_t size, int slotIdx = -1) {
-    validate<Mode, SmemSlots>();
+    validateBound<Mode, SmemSlots>();
     if (kind_ == Kind::Host) {
       BasePortChannelDeviceHandle::putWithSignal<Mode, SmemSlots>(bound_.host.dst, dstOffset, bound_.host.src,
                                                                   srcOffset, size);
@@ -252,7 +255,7 @@ struct PortChannelDeviceHandle : public BasePortChannelDeviceHandle {
   template <Concurrency Mode = Concurrency::Device, uint32_t SmemSlots = kDefaultSmemSlots>
   MSCCLPP_DEVICE_INLINE void putWithSignalAndFlush(uint64_t dstOffset, uint64_t srcOffset, uint64_t size,
                                                    int64_t maxSpinCount = 1000000, int slotIdx = -1) {
-    validate<Mode, SmemSlots>();
+    validateBound<Mode, SmemSlots>();
     if (kind_ == Kind::Host) {
       BasePortChannelDeviceHandle::putWithSignalAndFlush<Mode, SmemSlots>(bound_.host.dst, dstOffset, bound_.host.src,
                                                                           srcOffset, size, maxSpinCount);
@@ -269,7 +272,7 @@ struct PortChannelDeviceHandle : public BasePortChannelDeviceHandle {
   /// Atomically add to the bound destination region.
   template <Concurrency Mode = Concurrency::Device, uint32_t SmemSlots = kDefaultSmemSlots>
   MSCCLPP_DEVICE_INLINE void accumulate(uint64_t offset, int64_t value, int slotIdx = -1) {
-    validate<Mode, SmemSlots>();
+    validateBound<Mode, SmemSlots>();
     if (kind_ == Kind::Host) {
       BasePortChannelDeviceHandle::accumulate<Mode, SmemSlots>(bound_.host.dst, offset, value);
     } else {
@@ -280,7 +283,7 @@ struct PortChannelDeviceHandle : public BasePortChannelDeviceHandle {
   template <Concurrency Mode = Concurrency::Device, uint32_t SmemSlots = kDefaultSmemSlots>
   MSCCLPP_DEVICE_INLINE void putWithAccumulate(uint64_t dstOffset, uint64_t srcOffset, uint64_t size,
                                                uint64_t accOffset, int64_t value, int slotIdx = -1) {
-    validate<Mode, SmemSlots>();
+    validateBound<Mode, SmemSlots>();
     detail::portChannelRequire(kind_ == Kind::Device, "putWithAccumulate requires a Device channel");
     state_.device.backend.template putWithAccumulate<Mode, SmemSlots>(
         bound_.device.dst, dstOffset, bound_.device.src, srcOffset, size, bound_.device.dst, accOffset, value, slotIdx);
@@ -303,11 +306,26 @@ struct PortChannelDeviceHandle : public BasePortChannelDeviceHandle {
     MSCCLPP_HOST_DEVICE_INLINE constexpr explicit Bound(HostBound value) : host(value) {}
     MSCCLPP_HOST_DEVICE_INLINE constexpr explicit Bound(DeviceBound value) : device(value) {}
   };
+  // Base-subobject assignment cannot change which derived union member is active.
+  Kind boundKind_;
   Bound bound_;
+  MSCCLPP_HOST_DEVICE_INLINE constexpr bool hasMatchingBounds() const {
+    return (boundKind_ == Kind::Host || boundKind_ == Kind::Device) && boundKind_ == kind_;
+  }
+  MSCCLPP_HOST_DEVICE_INLINE void requireBoundMode() const {
+    detail::portChannelRequire(hasMatchingBounds(), "channel base/bound mode mismatch");
+  }
+#if defined(MSCCLPP_DEVICE_COMPILE)
+  template <Concurrency Mode, uint32_t SmemSlots>
+  MSCCLPP_DEVICE_INLINE void validateBound() const {
+    requireBoundMode();
+    validate<Mode, SmemSlots>();
+  }
+#endif
   MSCCLPP_HOST_DEVICE_INLINE constexpr PortChannelDeviceHandle(BasePortChannelDeviceHandle base, HostBound bound)
-      : BasePortChannelDeviceHandle(base), bound_(bound) {}
+      : BasePortChannelDeviceHandle(base), boundKind_(Kind::Host), bound_(bound) {}
   MSCCLPP_HOST_DEVICE_INLINE constexpr PortChannelDeviceHandle(BasePortChannelDeviceHandle base, DeviceBound bound)
-      : BasePortChannelDeviceHandle(base), bound_(bound) {}
+      : BasePortChannelDeviceHandle(base), boundKind_(Kind::Device), bound_(bound) {}
   friend struct PortChannel;
   friend struct detail::PortChannelHandleAccess;
 };

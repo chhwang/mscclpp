@@ -15,6 +15,13 @@ struct PortChannelHandleAccess {
     return BasePortChannelDeviceHandle(Host2DeviceSemaphoreDeviceHandle{}, GpuNetIoDeviceHandle{},
                                        GpuNetIoMemoryDeviceHandle{});
   }
+  static PortChannelDeviceHandle unavailableBoundDeviceForTest() {
+    return PortChannelDeviceHandle(unavailableDeviceForTest(),
+                                   PortChannelDeviceHandle::DeviceBound{GpuNetIoMemoryDeviceHandle{0x1000, 17},
+                                                                        GpuNetIoMemoryDeviceHandle{0x2000, 19}});
+  }
+  static bool hasMatchingBounds(const PortChannelDeviceHandle& handle) { return handle.hasMatchingBounds(); }
+  static void requireBoundModeForTest(const PortChannelDeviceHandle& handle) { handle.requireBoundMode(); }
   static bool isDevice(const BasePortChannelDeviceHandle& handle) {
     return handle.kind_ == BasePortChannelDeviceHandle::Kind::Device;
   }
@@ -37,15 +44,27 @@ struct PortChannelHandleAccess {
     return handle.state_.device;
   }
   static auto& hostBound(PortChannelDeviceHandle& handle) {
-    host(handle);
+    using Kind = BasePortChannelDeviceHandle::Kind;
+    // Only the default-derived state may be promoted by Python's Host field setters.
+    if (handle.boundKind_ == Kind::Invalid && (handle.kind_ == Kind::Invalid || handle.kind_ == Kind::Host)) {
+      host(handle);
+      handle.boundKind_ = Kind::Host;
+    }
+    if (!hasMatchingBounds(handle) || handle.kind_ != Kind::Host) {
+      throw Error("Host bound fields require matching Host/base state", ErrorCode::InvalidUsage);
+    }
     return handle.bound_.host;
   }
   static const auto& hostBound(const PortChannelDeviceHandle& handle) {
-    host(handle);
+    if (!hasMatchingBounds(handle) || isDevice(handle)) {
+      throw Error("Host bound fields require matching Host/base state", ErrorCode::InvalidUsage);
+    }
     return handle.bound_.host;
   }
   static const auto& deviceBound(const PortChannelDeviceHandle& handle) {
-    device(handle);
+    if (!hasMatchingBounds(handle) || !isDevice(handle)) {
+      throw Error("Device bound fields require matching Device/base state", ErrorCode::InvalidUsage);
+    }
     return handle.bound_.device;
   }
 };

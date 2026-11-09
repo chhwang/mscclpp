@@ -8,6 +8,7 @@
 #include <mscclpp/port_channel.hpp>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "../framework.hpp"
@@ -35,6 +36,93 @@ bool rejectsInvalidUsage(Func func) {
   return false;
 }
 }  // namespace
+
+static_assert(std::is_trivially_copy_assignable_v<mscclpp::BasePortChannelDeviceHandle>);
+static_assert(std::is_trivially_copy_assignable_v<mscclpp::PortChannelDeviceHandle>);
+static_assert(std::is_trivially_move_assignable_v<mscclpp::PortChannelDeviceHandle>);
+
+TEST(PortChannelHandleTest, BaseAssignmentRejectsMismatchedBounds) {
+  using Base = mscclpp::BasePortChannelDeviceHandle;
+  using Bound = mscclpp::PortChannelDeviceHandle;
+  const Bound host(3, {}, {}, 11, 13, nullptr);
+  const auto device = Access::unavailableBoundDeviceForTest();
+  EXPECT_TRUE(Access::hasMatchingBounds(host));
+  EXPECT_TRUE(Access::hasMatchingBounds(device));
+
+  auto hostBounds = host;
+  static_cast<Base&>(hostBounds) = static_cast<const Base&>(device);
+  EXPECT_FALSE(Access::hasMatchingBounds(hostBounds));
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::hostBound(hostBounds); }));
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::hostBound(std::as_const(hostBounds)); }));
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::deviceBound(hostBounds); }));
+  EXPECT_FALSE(Access::hasMatchingBounds(hostBounds));
+
+  auto deviceBounds = device;
+  static_cast<Base&>(deviceBounds) = static_cast<const Base&>(host);
+  EXPECT_FALSE(Access::hasMatchingBounds(deviceBounds));
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::hostBound(deviceBounds); }));
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::hostBound(std::as_const(deviceBounds)); }));
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::deviceBound(deviceBounds); }));
+  EXPECT_FALSE(Access::hasMatchingBounds(deviceBounds));
+
+  // Clearing just the base must not allow Host setters to retag existing Device bounds.
+  static_cast<Base&>(deviceBounds) = Base{};
+  Access::host(deviceBounds).id = 5;  // Python's base Host-property promotion is still allowed.
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::hostBound(deviceBounds); }));
+  EXPECT_FALSE(Access::hasMatchingBounds(deviceBounds));
+  auto clearedHost = host;
+  static_cast<Base&>(clearedHost) = Base{};
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::hostBound(clearedHost); }));
+  EXPECT_FALSE(Access::hasMatchingBounds(clearedHost));
+}
+
+TEST(PortChannelHandleTest, WholeHandleCopyMovePreservesBounds) {
+  using Bound = mscclpp::PortChannelDeviceHandle;
+  const Bound host(3, {}, {}, 11, 13, nullptr);
+  const auto device = Access::unavailableBoundDeviceForTest();
+  for (const auto& original : {host, device}) {
+    auto copy = original;
+    Bound assigned;
+    assigned = copy;
+    auto moved = std::move(copy);
+    Bound moveAssigned;
+    moveAssigned = std::move(assigned);
+    for (const auto* roundtrip : {&moved, &moveAssigned}) {
+      EXPECT_TRUE(Access::hasMatchingBounds(*roundtrip));
+      EXPECT_EQ(Access::isDevice(*roundtrip), Access::isDevice(original));
+      if (Access::isDevice(original)) {
+        EXPECT_EQ(Access::deviceBound(*roundtrip).dst.addr, uint64_t{0x1000});
+        EXPECT_EQ(Access::deviceBound(*roundtrip).src.key, 19u);
+      } else {
+        EXPECT_EQ(Access::hostBound(*roundtrip).dst, 11u);
+        EXPECT_EQ(Access::hostBound(*roundtrip).src, 13u);
+      }
+    }
+  }
+}
+
+TEST(PortChannelHandleTest, DefaultHostFieldPromotion) {
+  using Base = mscclpp::BasePortChannelDeviceHandle;
+  using Bound = mscclpp::PortChannelDeviceHandle;
+  Bound direct;
+  EXPECT_FALSE(Access::hasMatchingBounds(direct));
+  Access::hostBound(direct).src = 17;
+  EXPECT_TRUE(Access::hasMatchingBounds(direct));
+  EXPECT_EQ(Access::hostBound(std::as_const(direct)).src, 17u);
+
+  Bound baseFirst;
+  Access::host(baseFirst).id = 7;
+  EXPECT_FALSE(Access::hasMatchingBounds(baseFirst));
+  Access::hostBound(baseFirst).dst = 23;
+  EXPECT_TRUE(Access::hasMatchingBounds(baseFirst));
+  EXPECT_EQ(Access::hostBound(std::as_const(baseFirst)).dst, 23u);
+
+  Bound deviceBaseOnly;
+  static_cast<Base&>(deviceBaseOnly) = Access::unavailableDeviceForTest();
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::hostBound(deviceBaseOnly); }));
+  EXPECT_TRUE(rejectsInvalidUsage([&] { Access::deviceBound(deviceBaseOnly); }));
+  EXPECT_FALSE(Access::hasMatchingBounds(deviceBaseOnly));
+}
 
 TEST(ProxyServiceTest, InvalidChannels) {
   mscclpp::BasePortChannel base;
