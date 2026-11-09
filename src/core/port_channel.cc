@@ -40,7 +40,7 @@ MSCCLPP_API_CPP BasePortChannel::BasePortChannel(SemaphoreId semaphoreId,
 }
 
 MSCCLPP_API_CPP BasePortChannel::BasePortChannel(std::shared_ptr<PortDevice2DeviceSemaphore> semaphore)
-    : semaphore_(std::move(semaphore)) {
+    : semaphoreId_(0), semaphore_(std::move(semaphore)) {
   if (!std::get<std::shared_ptr<PortDevice2DeviceSemaphore>>(semaphore_)) {
     THROW(CONN, Error, ErrorCode::InvalidUsage, "BasePortChannel requires a non-null PortDevice2DeviceSemaphore");
   }
@@ -56,7 +56,7 @@ MSCCLPP_API_CPP PortChannel::PortChannel(SemaphoreId semaphoreId, std::shared_pt
 
 MSCCLPP_API_CPP PortChannel::PortChannel(std::shared_ptr<PortDevice2DeviceSemaphore> semaphore, RegisteredMemory dst,
                                          RegisteredMemory src)
-    : BasePortChannel(std::move(semaphore)), dstMemory_(std::move(dst)), srcMemory_(std::move(src)) {}
+    : BasePortChannel(std::move(semaphore)), dst_(0), src_(0), dstMemory_(std::move(dst)), srcMemory_(std::move(src)) {}
 
 MSCCLPP_API_CPP PortChannel::PortChannel(SemaphoreId semaphoreId, const Semaphore& semaphore,
                                          std::shared_ptr<Proxy> proxy, MemoryId dst, MemoryId src)

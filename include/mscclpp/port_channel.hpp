@@ -101,7 +101,7 @@ class ProxyService : public BaseProxyService {
 /// Port channel without specifying source/destination memory regions.
 struct BasePortChannel {
  private:
-  SemaphoreId semaphoreId_ = 0;
+  SemaphoreId semaphoreId_;
   std::variant<std::shared_ptr<Host2DeviceSemaphore>, std::shared_ptr<PortDevice2DeviceSemaphore>> semaphore_;
   std::shared_ptr<Proxy> proxy_;
 
@@ -111,7 +111,7 @@ struct BasePortChannel {
 
  public:
   /// Constructor. Handle extraction throws InvalidUsage until a channel is assigned.
-  BasePortChannel() = default;
+  BasePortChannel() noexcept : semaphoreId_(0) {}
 
   /// Constructor for a host-proxy channel.
   /// @param semaphoreId The ID of the semaphore.
@@ -163,8 +163,8 @@ struct BasePortChannel {
 /// Port channel.
 struct PortChannel : public BasePortChannel {
  private:
-  MemoryId dst_ = 0;
-  MemoryId src_ = 0;
+  MemoryId dst_;
+  MemoryId src_;
   RegisteredMemory dstMemory_;
   RegisteredMemory srcMemory_;
 
@@ -172,7 +172,7 @@ struct PortChannel : public BasePortChannel {
 
  public:
   /// Constructor. Handle extraction throws InvalidUsage until a channel is assigned.
-  PortChannel() = default;
+  PortChannel() noexcept : dst_(0), src_(0) {}
 
   /// Constructor for a host-proxy channel.
   /// @param semaphoreId The ID of the semaphore.

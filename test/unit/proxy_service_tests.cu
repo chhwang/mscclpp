@@ -12,6 +12,8 @@
 
 #include "../framework.hpp"
 
+static_assert(std::is_nothrow_default_constructible_v<mscclpp::BasePortChannel>);
+static_assert(std::is_nothrow_default_constructible_v<mscclpp::PortChannel>);
 static_assert(std::is_same_v<mscclpp::DeviceHandle<mscclpp::BasePortChannel>, mscclpp::BasePortChannelDeviceHandle>);
 static_assert(std::is_same_v<mscclpp::DeviceHandle<mscclpp::PortChannel>, mscclpp::PortChannelDeviceHandle>);
 static_assert(std::is_same_v<decltype(&mscclpp::BasePortChannel::deviceHandle),
