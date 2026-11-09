@@ -211,7 +211,7 @@ class MemoryChannelOneToOneTest : public CommunicatorTestBase {
   using PacketPingPongKernelWrapper = std::function<void(int*, int, int, int*, int)>;
   void packetPingPongTest(const std::string testName, PacketPingPongKernelWrapper kernelWrapper);
 
-  std::unordered_map<int, std::shared_ptr<mscclpp::MemoryDevice2DeviceSemaphore>> memorySemaphores;
+  std::unordered_map<int, std::shared_ptr<mscclpp::Device2DeviceSemaphore>> memorySemaphores;
 };
 
 /// Fixture for the bulk-copy usage patterns, shaped after the expert-parallel dispatch and combine

@@ -44,7 +44,7 @@ TEST(ProxyServiceTest, InvalidChannels) {
   EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::deviceHandle(channel); }));
 
   std::shared_ptr<mscclpp::Host2DeviceSemaphore> hostSemaphore;
-  std::shared_ptr<mscclpp::PortDevice2DeviceSemaphore> deviceSemaphore;
+  std::shared_ptr<mscclpp::Device2DeviceSemaphore> deviceSemaphore;
   EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::BasePortChannel invalid(0, hostSemaphore, nullptr); }));
   EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::PortChannel invalid(0, hostSemaphore, nullptr, 0, 0); }));
   EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::BasePortChannel invalid(deviceSemaphore); }));

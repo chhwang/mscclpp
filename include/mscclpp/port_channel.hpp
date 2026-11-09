@@ -102,7 +102,7 @@ class ProxyService : public BaseProxyService {
 struct BasePortChannel {
  private:
   SemaphoreId semaphoreId_;
-  std::variant<std::shared_ptr<Host2DeviceSemaphore>, std::shared_ptr<PortDevice2DeviceSemaphore>> semaphore_;
+  std::variant<std::shared_ptr<Host2DeviceSemaphore>, std::shared_ptr<Device2DeviceSemaphore>> semaphore_;
   std::shared_ptr<Proxy> proxy_;
 
   BasePortChannelDeviceHandleT<PortChannelBackend::Device> deviceBackendHandleImpl() const;
@@ -123,8 +123,9 @@ struct BasePortChannel {
 
   /// Constructor for a channel in device mode (PortChannelBackend::Device).
   /// @param semaphore The non-null semaphore of a PortChannel device-mode connection.
-  /// @throws Error with ErrorCode::InvalidUsage if semaphore is null.
-  explicit BasePortChannel(std::shared_ptr<PortDevice2DeviceSemaphore> semaphore);
+  /// @throws Error with ErrorCode::InvalidUsage for a null semaphore, non-device-mode connection, or invalid remote
+  /// token.
+  explicit BasePortChannel(std::shared_ptr<Device2DeviceSemaphore> semaphore);
 
   /// Constructor for a host-proxy channel.
   /// @param semaphoreId The ID of the semaphore.
@@ -187,7 +188,7 @@ struct PortChannel : public BasePortChannel {
   /// @param semaphore The non-null semaphore of a PortChannel device-mode connection.
   /// @param dst The destination registered memory.
   /// @param src The source registered memory.
-  PortChannel(std::shared_ptr<PortDevice2DeviceSemaphore> semaphore, RegisteredMemory dst, RegisteredMemory src);
+  PortChannel(std::shared_ptr<Device2DeviceSemaphore> semaphore, RegisteredMemory dst, RegisteredMemory src);
 
   /// Constructor for a host-proxy channel.
   /// @param semaphoreId The ID of the semaphore.

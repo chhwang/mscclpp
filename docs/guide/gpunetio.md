@@ -42,7 +42,7 @@ auto localMem = communicator->registerMemory(buff, bytes, mscclpp::Transport::IB
 communicator->sendMemory(localMem, remoteRank);
 auto remoteMem = communicator->recvMemory(remoteRank).get();
 
-auto semaphore = std::make_shared<mscclpp::PortDevice2DeviceSemaphore>(*communicator, connection);
+auto semaphore = std::make_shared<mscclpp::Device2DeviceSemaphore>(*communicator, connection);
 mscclpp::PortChannel channel(semaphore, remoteMem, localMem);
 auto deviceHandle = channel.deviceBackendHandle();
 ```
@@ -57,6 +57,19 @@ Extracting a Host handle from a Device channel, or a Device handle from a Host c
 semaphore pointers, and Host constructors also reject a null proxy. Keep the channel alive while using its handle.
 Channel copies share semaphore ownership and progress; copying does not create an independent signal counter.
 Registered memory retains metadata, not ownership of application buffers, so keep those buffers alive too.
+
+`Device2DeviceSemaphore` is the move-only host semaphore for both Memory channels and Device-backend Port channels.
+Its no-argument `deviceHandle()` returns the existing Memory-facing handle and rejects Device-mode connections.
+`portDeviceHandle()` returns the existing Port-facing handle and rejects non-Device connections or a zero or
+non-8-byte-aligned remote token address. It resolves the remote address and registration key on every extraction.
+Port channel construction performs this check before returning. Both handle views use the same expected counter;
+extracting a handle does not allocate or reset a counter. The counter is allocated on the connection's local GPU,
+not the caller's current GPU, and construction restores the caller's current device.
+
+The deprecated C++ names `MemoryDevice2DeviceSemaphore` and `SmDevice2DeviceSemaphore` alias the new class.
+Use `Device2DeviceSemaphore` in new C++ code. The class rename changes C++ ABI symbols; rebuild C++ consumers.
+The separate host type `PortDevice2DeviceSemaphore` is removed; replace it with `Device2DeviceSemaphore`.
+The GPU handle type names are unchanged. Python keeps its existing `MemoryDevice2DeviceSemaphore` name.
 
 Exclusive-mode operations automatically use internal shared-memory WQE slots for BlueFlame submission when the
 transfer fits `device_.blueFlameLimit` (default: 512 KiB) and the calling thread has a slot:

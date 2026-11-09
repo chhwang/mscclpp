@@ -68,7 +68,7 @@ Semaphores
 .. doxygenclass:: mscclpp::Host2HostSemaphore
    :members:
 
-.. doxygenclass:: mscclpp::MemoryDevice2DeviceSemaphore
+.. doxygenclass:: mscclpp::Device2DeviceSemaphore
    :members:
 
 .. doxygenclass:: mscclpp::Semaphore

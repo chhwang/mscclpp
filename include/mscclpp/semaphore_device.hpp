@@ -58,7 +58,7 @@ struct Host2DeviceSemaphoreDeviceHandle {
   uint64_t* expectedInboundToken;
 };
 
-/// Device-side handle for MemoryDevice2DeviceSemaphore.
+/// Memory-facing device-side handle for Device2DeviceSemaphore.
 struct MemoryDevice2DeviceSemaphoreDeviceHandle {
 #if defined(MSCCLPP_DEVICE_COMPILE)
   /// Poll if remote device has signaled.
@@ -135,7 +135,7 @@ struct MemoryDevice2DeviceSemaphoreDeviceHandle {
   uint64_t* expectedInboundToken;
 };
 
-/// Device-side handle for PortDevice2DeviceSemaphore.
+/// Port-facing device-side handle for Device2DeviceSemaphore.
 /// Used by a PortChannel in device mode, which posts the signals; this handle holds the token state on both sides.
 struct PortDevice2DeviceSemaphoreDeviceHandle {
 #if defined(MSCCLPP_DEVICE_COMPILE)

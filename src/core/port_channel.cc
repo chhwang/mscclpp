@@ -39,11 +39,13 @@ MSCCLPP_API_CPP BasePortChannel::BasePortChannel(SemaphoreId semaphoreId,
   }
 }
 
-MSCCLPP_API_CPP BasePortChannel::BasePortChannel(std::shared_ptr<PortDevice2DeviceSemaphore> semaphore)
+MSCCLPP_API_CPP BasePortChannel::BasePortChannel(std::shared_ptr<Device2DeviceSemaphore> semaphore)
     : semaphoreId_(0), semaphore_(std::move(semaphore)) {
-  if (!std::get<std::shared_ptr<PortDevice2DeviceSemaphore>>(semaphore_)) {
-    THROW(CONN, Error, ErrorCode::InvalidUsage, "BasePortChannel requires a non-null PortDevice2DeviceSemaphore");
+  const auto& deviceSemaphore = std::get<std::shared_ptr<Device2DeviceSemaphore>>(semaphore_);
+  if (!deviceSemaphore) {
+    THROW(CONN, Error, ErrorCode::InvalidUsage, "BasePortChannel requires a non-null Device2DeviceSemaphore");
   }
+  deviceSemaphore->portDeviceHandle();
 }
 
 MSCCLPP_API_CPP BasePortChannel::BasePortChannel(SemaphoreId semaphoreId, const Semaphore& semaphore,
@@ -54,7 +56,7 @@ MSCCLPP_API_CPP PortChannel::PortChannel(SemaphoreId semaphoreId, std::shared_pt
                                          std::shared_ptr<Proxy> proxy, MemoryId dst, MemoryId src)
     : BasePortChannel(semaphoreId, std::move(semaphore), std::move(proxy)), dst_(dst), src_(src) {}
 
-MSCCLPP_API_CPP PortChannel::PortChannel(std::shared_ptr<PortDevice2DeviceSemaphore> semaphore, RegisteredMemory dst,
+MSCCLPP_API_CPP PortChannel::PortChannel(std::shared_ptr<Device2DeviceSemaphore> semaphore, RegisteredMemory dst,
                                          RegisteredMemory src)
     : BasePortChannel(std::move(semaphore)), dst_(0), src_(0), dstMemory_(std::move(dst)), srcMemory_(std::move(src)) {}
 
@@ -250,13 +252,13 @@ MSCCLPP_API_CPP BasePortChannel::DeviceHandle BasePortChannel::deviceHandle() co
 
 MSCCLPP_API_CPP BasePortChannelDeviceHandleT<PortChannelBackend::Device> BasePortChannel::deviceBackendHandleImpl()
     const {
-  const auto* semaphore = std::get_if<std::shared_ptr<PortDevice2DeviceSemaphore>>(&semaphore_);
+  const auto* semaphore = std::get_if<std::shared_ptr<Device2DeviceSemaphore>>(&semaphore_);
   if (!semaphore || !*semaphore) {
     THROW(CONN, Error, ErrorCode::InvalidUsage,
-          "BasePortChannel::deviceBackendHandle() requires a PortDevice2DeviceSemaphore");
+          "BasePortChannel::deviceBackendHandle() requires a Device2DeviceSemaphore");
   }
   auto& conn = BaseConnection::getImpl((*semaphore)->connection());
-  return {(*semaphore)->deviceHandle(), conn->getDeviceBackendInfo()};
+  return {(*semaphore)->portDeviceHandle(), conn->getDeviceBackendInfo()};
 }
 
 MSCCLPP_API_CPP PortChannel::DeviceHandle PortChannel::deviceHandle() const {
@@ -266,7 +268,7 @@ MSCCLPP_API_CPP PortChannel::DeviceHandle PortChannel::deviceHandle() const {
 
 MSCCLPP_API_CPP PortChannelDeviceHandleT<PortChannelBackend::Device> PortChannel::deviceBackendHandleImpl() const {
   const auto base = BasePortChannel::deviceBackendHandleImpl();
-  auto& conn = BaseConnection::getImpl(std::get<std::shared_ptr<PortDevice2DeviceSemaphore>>(semaphore_)->connection());
+  auto& conn = BaseConnection::getImpl(std::get<std::shared_ptr<Device2DeviceSemaphore>>(semaphore_)->connection());
   return {base.semaphore_, base.device_, conn->getDeviceMemoryInfo(dstMemory_), conn->getDeviceMemoryInfo(srcMemory_)};
 }
 

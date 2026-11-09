@@ -173,7 +173,7 @@ void PortChannelOneToOneTest::setupMeshConnections(std::vector<mscclpp::PortChan
     }
     auto sema = communicator->buildSemaphore(connectionFutures[r].get(), r).get();
     if (ibMode == IbMode::Device) {
-      portChannels.emplace_back(mscclpp::PortChannel(std::make_shared<mscclpp::PortDevice2DeviceSemaphore>(sema),
+      portChannels.emplace_back(mscclpp::PortChannel(std::make_shared<mscclpp::Device2DeviceSemaphore>(sema),
                                                      remoteMemFutures[r].get(), sendBufRegMem));
     } else {
       mscclpp::SemaphoreId cid = proxyService->addSemaphore(sema);
@@ -1125,8 +1125,8 @@ void PortChannelOneToOneTest::setupMultiQpChannels(int numQps, size_t elemsPerCh
     remoteMems[q] = remoteMemFutures[q].get();
     auto sema = communicator->buildSemaphore(conn, peer, tagBase + 2 * numQps + q).get();
     if (ibMode == IbMode::Device) {
-      portChannels.emplace_back(mscclpp::PortChannel(std::make_shared<mscclpp::PortDevice2DeviceSemaphore>(sema),
-                                                     remoteMems[q], localMems[q]));
+      portChannels.emplace_back(
+          mscclpp::PortChannel(std::make_shared<mscclpp::Device2DeviceSemaphore>(sema), remoteMems[q], localMems[q]));
     } else {
       mscclpp::SemaphoreId cid = proxyService->addSemaphore(sema);
       portChannels.emplace_back(proxyService->portChannel(cid, proxyService->addMemory(remoteMems[q]),
@@ -1511,7 +1511,7 @@ void PortChannelFanInTest::testFanIn(bool useIPC, bool useIb, bool useEthernet, 
     for (int r = 1; r < worldSize; r++) {
       auto sema = communicator->buildSemaphore(connFutures[r].get(), r).get();
       if (ibMode == IbMode::Device) {
-        portChannels.emplace_back(mscclpp::PortChannel(std::make_shared<mscclpp::PortDevice2DeviceSemaphore>(sema),
+        portChannels.emplace_back(mscclpp::PortChannel(std::make_shared<mscclpp::Device2DeviceSemaphore>(sema),
                                                        remoteMemFutures[r].get(), localMem));
       } else {
         mscclpp::SemaphoreId cid = proxyService->addSemaphore(sema);
@@ -1523,7 +1523,7 @@ void PortChannelFanInTest::testFanIn(bool useIPC, bool useIb, bool useEthernet, 
   } else {
     auto sema = communicator->buildSemaphore(connFutures[0].get(), 0).get();
     if (ibMode == IbMode::Device) {
-      portChannels.emplace_back(mscclpp::PortChannel(std::make_shared<mscclpp::PortDevice2DeviceSemaphore>(sema),
+      portChannels.emplace_back(mscclpp::PortChannel(std::make_shared<mscclpp::Device2DeviceSemaphore>(sema),
                                                      remoteMemFutures[0].get(), localMem));
     } else {
       mscclpp::SemaphoreId cid = proxyService->addSemaphore(sema);

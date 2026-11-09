@@ -87,65 +87,46 @@ class Host2HostSemaphore {
   void wait(int64_t maxSpinCount = 10000000);
 };
 
-/// A semaphore for sending signals from the local device to a peer device via a GPU thread.
-class MemoryDevice2DeviceSemaphore {
+/// A move-only semaphore for signaling a peer device through memory or a device-backend PortChannel.
+class Device2DeviceSemaphore {
  private:
   Semaphore semaphore_;
   detail::UniqueGpuPtr<uint64_t> expectedInboundToken_;
 
  public:
-  /// Constructor.
-  /// @param semaphore
-  MemoryDevice2DeviceSemaphore(const Semaphore& semaphore);
+  /// Constructor. Allocates the expected counter on the local endpoint's GPU and restores the caller's device.
+  /// @param semaphore The semaphore associated with the connection.
+  /// @throws Error with ErrorCode::InvalidUsage if the local endpoint is not a GPU.
+  Device2DeviceSemaphore(const Semaphore& semaphore);
 
   /// Constructor.
   /// @param communicator The communicator.
   /// @param connection The connection associated with this semaphore.
-  MemoryDevice2DeviceSemaphore(Communicator& communicator, const Connection& connection);
+  Device2DeviceSemaphore(Communicator& communicator, const Connection& connection);
 
   /// Returns the connection.
   /// @return The connection associated with this semaphore.
   Connection& connection();
 
-  /// Device-side handle for MemoryDevice2DeviceSemaphore.
+  /// Memory-facing device-side handle for Device2DeviceSemaphore.
   using DeviceHandle = MemoryDevice2DeviceSemaphoreDeviceHandle;
 
-  /// Returns the device-side handle.
+  /// Returns the memory-facing device-side handle.
+  /// @throws Error with ErrorCode::InvalidUsage for a PortChannel device-mode connection.
   DeviceHandle deviceHandle() const;
+
+  /// Returns a device-backend PortChannel semaphore handle sharing this semaphore's expected counter.
+  /// Resolves the remote token's current address and registration key on every extraction.
+  /// @return The port handle, valid while this semaphore remains alive.
+  /// @throws Error with ErrorCode::InvalidUsage for a non-device-mode connection or a zero/misaligned remote token.
+  PortDevice2DeviceSemaphoreDeviceHandle portDeviceHandle() const;
 };
 
-/// A semaphore for sending signals from the local device to a peer device through a PortChannel in device mode
-/// (PortChannelBackend::Device).
-class PortDevice2DeviceSemaphore {
- private:
-  Semaphore semaphore_;
-  detail::UniqueGpuPtr<uint64_t> expectedInboundToken_;
-  DeviceMemoryHandle remoteInboundToken_;
+/// @deprecated Use Device2DeviceSemaphore instead.
+using MemoryDevice2DeviceSemaphore [[deprecated("Use Device2DeviceSemaphore instead.")]] = Device2DeviceSemaphore;
 
- public:
-  /// Constructor.
-  /// @param semaphore The semaphore of a PortChannel device-mode connection.
-  PortDevice2DeviceSemaphore(const Semaphore& semaphore);
-
-  /// Constructor.
-  /// @param communicator The communicator.
-  /// @param connection The PortChannel device-mode connection associated with this semaphore.
-  PortDevice2DeviceSemaphore(Communicator& communicator, const Connection& connection);
-
-  /// Returns the connection.
-  /// @return The connection associated with this semaphore.
-  Connection& connection();
-
-  /// Device-side handle for PortDevice2DeviceSemaphore.
-  using DeviceHandle = PortDevice2DeviceSemaphoreDeviceHandle;
-
-  /// Returns the device-side handle.
-  DeviceHandle deviceHandle() const;
-};
-
-/// @deprecated Use MemoryDevice2DeviceSemaphore instead.
-[[deprecated(
-    "Use MemoryDevice2DeviceSemaphore instead.")]] typedef MemoryDevice2DeviceSemaphore SmDevice2DeviceSemaphore;
+/// @deprecated Use Device2DeviceSemaphore instead.
+using SmDevice2DeviceSemaphore [[deprecated("Use Device2DeviceSemaphore instead.")]] = Device2DeviceSemaphore;
 
 }  // namespace mscclpp
 
