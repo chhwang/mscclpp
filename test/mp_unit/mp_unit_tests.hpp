@@ -191,7 +191,8 @@ class PortChannelOneToOneTest : public CommunicatorTestBase {
                             std::vector<std::shared_ptr<int>>& sendBuffs,
                             std::vector<mscclpp::RegisteredMemory>& localMems,
                             std::vector<mscclpp::RegisteredMemory>& remoteMems,
-                            std::vector<mscclpp::PortChannel>& portChannels);
+                            std::vector<mscclpp::PortChannel>& portChannels,
+                            uint32_t blueFlameLimit = mscclpp::EndpointConfig::Ib::GpuNetIo::DefaultBlueFlameLimit);
   void testMultiQpBandwidth(IbMode ibMode, int numQps, Concurrency concurrency = Concurrency::Exclusive,
                             int threadsPerQp = 1);
   void testMultiQpFlushStress(IbMode ibMode, int numQps, Concurrency concurrency = Concurrency::Exclusive,

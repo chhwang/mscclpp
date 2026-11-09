@@ -51,6 +51,38 @@ def test_env(mpi_group: MpiGroup):
     assert e == e2
 
 
+@parametrize_mpi_groups(1)
+def test_unified_port_channel_interface(mpi_group: MpiGroup):
+    from mscclpp._mscclpp import (
+        CppBasePortChannel,
+        CppBasePortChannelDeviceHandle,
+        CppPortChannel,
+        CppPortChannelDeviceHandle,
+        Error,
+    )
+
+    cfg = EndpointConfig()
+    assert cfg.ib.gpunetio.blue_flame_limit == 512 * 1024
+    cfg.ib.gpunetio.blue_flame_limit = 0
+    assert cfg.ib.gpunetio.blue_flame_limit == 0
+    for channel in (CppBasePortChannel(), CppPortChannel()):
+        with pytest.raises(Error, match="initialized"):
+            channel.device_handle()
+
+    base = CppBasePortChannelDeviceHandle()
+    base.semaphore_id_ = 3
+    assert base.semaphore_id_ == 3
+    bound = CppPortChannelDeviceHandle()
+    bound.semaphore_id_ = 7
+    bound.dst_ = 11
+    bound.src_ = 13
+    assert (bound.semaphore_id_, bound.dst_, bound.src_) == (7, 11, 13)
+    assert not hasattr(bound, "device_")
+    assert not hasattr(bound, "dstMemory_")
+    assert len(base.raw) > 0
+    assert len(bound.raw) >= len(base.raw)
+
+
 def all_ranks_on_the_same_node(mpi_group: MpiGroup):
     if (ethernet_interface_name in ni.interfaces()) is False:
         pytest.skip(f"{ethernet_interface_name} is not an interface to use on this node")

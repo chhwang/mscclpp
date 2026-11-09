@@ -45,7 +45,19 @@ MSCCLPP_API_CPP BasePortChannel::BasePortChannel(std::shared_ptr<Device2DeviceSe
   if (!deviceSemaphore) {
     THROW(CONN, Error, ErrorCode::InvalidUsage, "BasePortChannel requires a non-null Device2DeviceSemaphore");
   }
-  deviceSemaphore->portDeviceHandle();
+  deviceHandle();
+}
+
+MSCCLPP_API_CPP BasePortChannel::BasePortChannel(const Semaphore& semaphore) : semaphoreId_(0) {
+  if (!semaphore.pimpl_) {
+    THROW(CONN, Error, ErrorCode::InvalidUsage, "PortChannel requires an initialized raw semaphore");
+  }
+  auto raw = semaphore;
+  if (!BaseConnection::getImpl(raw.connection())->isDeviceBackend()) {
+    THROW(CONN, Error, ErrorCode::InvalidUsage, "PortChannel without a host proxy requires a Device-mode connection");
+  }
+  semaphore_ = std::make_shared<Device2DeviceSemaphore>(semaphore);
+  deviceHandle();
 }
 
 MSCCLPP_API_CPP BasePortChannel::BasePortChannel(SemaphoreId semaphoreId, const Semaphore& semaphore,
@@ -58,7 +70,18 @@ MSCCLPP_API_CPP PortChannel::PortChannel(SemaphoreId semaphoreId, std::shared_pt
 
 MSCCLPP_API_CPP PortChannel::PortChannel(std::shared_ptr<Device2DeviceSemaphore> semaphore, RegisteredMemory dst,
                                          RegisteredMemory src)
-    : BasePortChannel(std::move(semaphore)), dst_(0), src_(0), dstMemory_(std::move(dst)), srcMemory_(std::move(src)) {}
+    : BasePortChannel(std::move(semaphore)), dst_(0), src_(0), dstMemory_(std::move(dst)), srcMemory_(std::move(src)) {
+  if (!dstMemory_.pimpl_ || !srcMemory_.pimpl_) {
+    THROW(CONN, Error, ErrorCode::InvalidUsage, "PortChannel requires initialized registered regions");
+  }
+}
+
+MSCCLPP_API_CPP PortChannel::PortChannel(const Semaphore& semaphore, RegisteredMemory dst, RegisteredMemory src)
+    : BasePortChannel(semaphore), dst_(0), src_(0), dstMemory_(std::move(dst)), srcMemory_(std::move(src)) {
+  if (!dstMemory_.pimpl_ || !srcMemory_.pimpl_) {
+    THROW(CONN, Error, ErrorCode::InvalidUsage, "PortChannel requires initialized registered regions");
+  }
+}
 
 MSCCLPP_API_CPP PortChannel::PortChannel(SemaphoreId semaphoreId, const Semaphore& semaphore,
                                          std::shared_ptr<Proxy> proxy, MemoryId dst, MemoryId src)
@@ -238,38 +261,40 @@ ProxyHandlerResult ProxyService::handleTrigger(ProxyTrigger trigger) {
 }
 
 MSCCLPP_API_CPP BasePortChannel::DeviceHandle BasePortChannel::deviceHandle() const {
-  const auto* semaphore = std::get_if<std::shared_ptr<Host2DeviceSemaphore>>(&semaphore_);
-  if (!semaphore || !*semaphore) {
-    THROW(CONN, Error, ErrorCode::InvalidUsage, "BasePortChannel::deviceHandle() requires a Host2DeviceSemaphore");
+  if (const auto* host = std::get_if<std::shared_ptr<Host2DeviceSemaphore>>(&semaphore_)) {
+    if (!*host) {
+      THROW(CONN, Error, ErrorCode::InvalidUsage, "BasePortChannel::deviceHandle() requires an initialized semaphore");
+    }
+    if (!proxy_) {
+      THROW(CONN, Error, ErrorCode::InvalidUsage, "BasePortChannel::deviceHandle() requires a non-null host proxy");
+    }
+    auto& conn = BaseConnection::getImpl((*host)->connection());
+    if (conn->isDeviceBackend()) {
+      THROW(CONN, Error, ErrorCode::InvalidUsage, "Device-mode connections do not use a host proxy");
+    }
+    return DeviceHandle(semaphoreId_, (*host)->deviceHandle(), proxy_->fifo()->deviceHandle(), conn->getFlushDonePtr());
   }
-  if (!proxy_) {
-    THROW(CONN, Error, ErrorCode::InvalidUsage, "BasePortChannel::deviceHandle() requires a non-null host proxy");
+  const auto& device = std::get<std::shared_ptr<Device2DeviceSemaphore>>(semaphore_);
+  if (!device || !device->semaphore_.pimpl_ || !device->expectedInboundToken_) {
+    THROW(CONN, Error, ErrorCode::InvalidUsage, "BasePortChannel::deviceHandle() requires an initialized semaphore");
   }
-  auto& conn = BaseConnection::getImpl((*semaphore)->connection());
-  return DeviceHandle(semaphoreId_, (*semaphore)->deviceHandle(), proxy_->fifo()->deviceHandle(),
-                      conn->getFlushDonePtr());
-}
-
-MSCCLPP_API_CPP BasePortChannelDeviceHandleT<PortChannelBackend::Device> BasePortChannel::deviceBackendHandleImpl()
-    const {
-  const auto* semaphore = std::get_if<std::shared_ptr<Device2DeviceSemaphore>>(&semaphore_);
-  if (!semaphore || !*semaphore) {
-    THROW(CONN, Error, ErrorCode::InvalidUsage,
-          "BasePortChannel::deviceBackendHandle() requires a Device2DeviceSemaphore");
+  const auto receive = device->portReceiveHandle();
+  auto& conn = BaseConnection::getImpl(device->connection());
+  const auto remoteSignal = conn->getDeviceMemoryInfo(device->semaphore_.remoteMemory());
+  if (remoteSignal.addr == 0 || remoteSignal.addr % sizeof(uint64_t) != 0) {
+    THROW(CONN, Error, ErrorCode::InvalidUsage, "remote semaphore token is not addressable in Device mode");
   }
-  auto& conn = BaseConnection::getImpl((*semaphore)->connection());
-  return {(*semaphore)->portDeviceHandle(), conn->getDeviceBackendInfo()};
+  return DeviceHandle(receive, conn->getDeviceBackendInfo(), remoteSignal);
 }
 
 MSCCLPP_API_CPP PortChannel::DeviceHandle PortChannel::deviceHandle() const {
   const auto base = BasePortChannel::deviceHandle();
-  return DeviceHandle(base.semaphoreId_, base.semaphore_, base.fifo_, dst_, src_, base.flushDonePos_);
-}
-
-MSCCLPP_API_CPP PortChannelDeviceHandleT<PortChannelBackend::Device> PortChannel::deviceBackendHandleImpl() const {
-  const auto base = BasePortChannel::deviceBackendHandleImpl();
+  if (base.kind_ == BasePortChannelDeviceHandle::Kind::Host) {
+    return DeviceHandle(base, DeviceHandle::HostBound{dst_, src_});
+  }
   auto& conn = BaseConnection::getImpl(std::get<std::shared_ptr<Device2DeviceSemaphore>>(semaphore_)->connection());
-  return {base.semaphore_, base.device_, conn->getDeviceMemoryInfo(dstMemory_), conn->getDeviceMemoryInfo(srcMemory_)};
+  return DeviceHandle(
+      base, DeviceHandle::DeviceBound{conn->getDeviceMemoryInfo(dstMemory_), conn->getDeviceMemoryInfo(srcMemory_)});
 }
 
 void ProxyService::progressFlushes() {

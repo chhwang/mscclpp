@@ -105,8 +105,6 @@ struct BasePortChannel {
   std::variant<std::shared_ptr<Host2DeviceSemaphore>, std::shared_ptr<Device2DeviceSemaphore>> semaphore_;
   std::shared_ptr<Proxy> proxy_;
 
-  BasePortChannelDeviceHandleT<PortChannelBackend::Device> deviceBackendHandleImpl() const;
-
   friend struct PortChannel;
 
  public:
@@ -127,6 +125,11 @@ struct BasePortChannel {
   /// token.
   explicit BasePortChannel(std::shared_ptr<Device2DeviceSemaphore> semaphore);
 
+  /// Construct a Device channel from a raw semaphore, without a proxy.
+  /// Creates an internal owner; channel copies share its expected counter.
+  /// @throws Error with ErrorCode::InvalidUsage unless the connection is in Device mode.
+  explicit BasePortChannel(const Semaphore& semaphore);
+
   /// Constructor for a host-proxy channel.
   /// @param semaphoreId The ID of the semaphore.
   /// @param semaphore The semaphore used to synchronize the communication.
@@ -141,24 +144,12 @@ struct BasePortChannel {
   /// @param other The other BasePortChannel to assign from.
   BasePortChannel& operator=(const BasePortChannel& other) = default;
 
-  /// Host-backend device-side handle for BasePortChannel.
+  /// Unified device-side handle for BasePortChannel.
   using DeviceHandle = BasePortChannelDeviceHandle;
 
-  /// Returns the host-backend device-side handle.
-  /// User should make sure the BasePortChannel is not released when using the returned handle.
-  /// @return The host-backend device-side handle.
-  /// @throws Error with ErrorCode::InvalidUsage for a device-backend or uninitialized channel.
+  /// Returns the unified Host or Device handle, valid while this channel remains alive.
+  /// @throws Error with ErrorCode::InvalidUsage for uninitialized or incompatible connection state.
   DeviceHandle deviceHandle() const;
-
-  /// Returns a device-backend handle with `SmemSlots` shared-memory slots per CTA.
-  /// @tparam SmemSlots Number of 64-byte shared-memory slots per CTA (0 disables BlueFlame, maximum 1024).
-  /// @return The device-backend handle, valid while this BasePortChannel remains alive.
-  /// @throws Error with ErrorCode::InvalidUsage for a host-backend or uninitialized channel.
-  template <uint32_t SmemSlots = DeviceBackendHandle::kDefaultSmemSlots>
-  BasePortChannelDeviceHandleT<PortChannelBackend::Device, SmemSlots> deviceBackendHandle() const {
-    const auto h = deviceBackendHandleImpl();
-    return {h.semaphore_, h.device_};
-  }
 };
 
 /// Port channel.
@@ -168,8 +159,6 @@ struct PortChannel : public BasePortChannel {
   MemoryId src_;
   RegisteredMemory dstMemory_;
   RegisteredMemory srcMemory_;
-
-  PortChannelDeviceHandleT<PortChannelBackend::Device> deviceBackendHandleImpl() const;
 
  public:
   /// Constructor. Handle extraction throws InvalidUsage until a channel is assigned.
@@ -190,6 +179,10 @@ struct PortChannel : public BasePortChannel {
   /// @param src The source registered memory.
   PortChannel(std::shared_ptr<Device2DeviceSemaphore> semaphore, RegisteredMemory dst, RegisteredMemory src);
 
+  /// Construct a bound Device channel from the raw semaphore and registered regions, without a proxy.
+  /// Registered memory retains metadata, not ownership of application buffers.
+  PortChannel(const Semaphore& semaphore, RegisteredMemory dst, RegisteredMemory src);
+
   /// Constructor for a host-proxy channel.
   /// @param semaphoreId The ID of the semaphore.
   /// @param semaphore The semaphore.
@@ -207,24 +200,13 @@ struct PortChannel : public BasePortChannel {
   /// @param other The other PortChannel to assign from.
   PortChannel& operator=(const PortChannel& other) = default;
 
-  /// Host-backend device-side handle for PortChannel.
+  /// Unified device-side handle for PortChannel.
   using DeviceHandle = PortChannelDeviceHandle;
 
-  /// Returns the host-backend device-side handle.
-  /// User should make sure the PortChannel is not released when using the returned handle.
-  /// @return The host-backend device-side handle.
-  /// @throws Error with ErrorCode::InvalidUsage for a device-backend or uninitialized channel.
+  /// Returns the same normal handle type for Host and Device channels.
+  /// Keep this channel and its application buffers alive while using the handle.
+  /// @throws Error with ErrorCode::InvalidUsage for uninitialized or incompatible connection state.
   DeviceHandle deviceHandle() const;
-
-  /// Returns a device-backend handle with `SmemSlots` shared-memory slots per CTA.
-  /// @tparam SmemSlots Number of 64-byte shared-memory slots per CTA (0 disables BlueFlame, maximum 1024).
-  /// @return The device-backend handle, valid while this PortChannel remains alive.
-  /// @throws Error with ErrorCode::InvalidUsage for a host-backend or uninitialized channel.
-  template <uint32_t SmemSlots = DeviceBackendHandle::kDefaultSmemSlots>
-  PortChannelDeviceHandleT<PortChannelBackend::Device, SmemSlots> deviceBackendHandle() const {
-    const auto h = deviceBackendHandleImpl();
-    return {h.semaphore_, h.device_, h.dstMemory_, h.srcMemory_};
-  }
 };
 
 /// @deprecated Use BasePortChannel instead.

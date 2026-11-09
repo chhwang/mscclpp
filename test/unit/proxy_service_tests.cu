@@ -11,6 +11,9 @@
 #include <vector>
 
 #include "../framework.hpp"
+#include "port_channel_handle_access.hpp"
+
+using Access = mscclpp::detail::PortChannelHandleAccess;
 
 static_assert(std::is_nothrow_default_constructible_v<mscclpp::BasePortChannel>);
 static_assert(std::is_nothrow_default_constructible_v<mscclpp::PortChannel>);
@@ -37,11 +40,13 @@ TEST(ProxyServiceTest, InvalidChannels) {
   mscclpp::BasePortChannel base;
   mscclpp::PortChannel channel;
   EXPECT_TRUE(rejectsInvalidUsage([&] { base.deviceHandle(); }));
-  EXPECT_TRUE(rejectsInvalidUsage([&] { base.deviceBackendHandle(); }));
   EXPECT_TRUE(rejectsInvalidUsage([&] { channel.deviceHandle(); }));
-  EXPECT_TRUE(rejectsInvalidUsage([&] { channel.deviceBackendHandle(); }));
   EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::deviceHandle(base); }));
   EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::deviceHandle(channel); }));
+
+  mscclpp::Semaphore raw;
+  EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::BasePortChannel invalid(raw); }));
+  EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::PortChannel invalid(raw, {}, {}); }));
 
   std::shared_ptr<mscclpp::Host2DeviceSemaphore> hostSemaphore;
   std::shared_ptr<mscclpp::Device2DeviceSemaphore> deviceSemaphore;
@@ -68,12 +73,15 @@ TEST(ProxyServiceTest, HostChannelHandlesAndOwnership) {
   auto channel = service->portChannel(id, 17, 23);
   const auto baseHandle = mscclpp::deviceHandle(base);
   const auto handle = mscclpp::deviceHandle(channel);
-  EXPECT_EQ(handle.semaphoreId_, id);
-  EXPECT_EQ(handle.dst_, 17u);
-  EXPECT_EQ(handle.src_, 23u);
-  EXPECT_EQ(baseHandle.semaphore_.expectedInboundToken, handle.semaphore_.expectedInboundToken);
-  EXPECT_TRUE(rejectsInvalidUsage([&] { base.deviceBackendHandle(); }));
-  EXPECT_TRUE(rejectsInvalidUsage([&] { channel.deviceBackendHandle(); }));
+  EXPECT_EQ(Access::host(handle).id, id);
+  EXPECT_EQ(Access::hostBound(handle).dst, 17u);
+  EXPECT_EQ(Access::hostBound(handle).src, 23u);
+  EXPECT_EQ(Access::receive(baseHandle).expectedInboundToken, Access::receive(handle).expectedInboundToken);
+  EXPECT_FALSE(Access::isDevice(baseHandle));
+  EXPECT_FALSE(Access::isDevice(handle));
+  auto raw = communicator.buildSemaphore(connection, 0, 87).get();
+  EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::BasePortChannel invalid(raw); }));
+  EXPECT_TRUE(rejectsInvalidUsage([&] { mscclpp::PortChannel invalid(raw, {}, {}); }));
 
   auto baseCopy = base;
   auto channelCopy = channel;
@@ -82,10 +90,12 @@ TEST(ProxyServiceTest, HostChannelHandlesAndOwnership) {
   semaphore.reset();
   service.reset();
   EXPECT_FALSE(weakSemaphore.expired());
-  EXPECT_EQ(baseCopy.deviceHandle().semaphore_.expectedInboundToken, baseHandle.semaphore_.expectedInboundToken);
-  EXPECT_EQ(channelCopy.deviceHandle().semaphore_.expectedInboundToken, handle.semaphore_.expectedInboundToken);
-  EXPECT_EQ(channelCopy.deviceHandle().dst_, handle.dst_);
-  EXPECT_EQ(channelCopy.deviceHandle().src_, handle.src_);
+  EXPECT_EQ(Access::receive(baseCopy.deviceHandle()).expectedInboundToken,
+            Access::receive(baseHandle).expectedInboundToken);
+  EXPECT_EQ(Access::receive(channelCopy.deviceHandle()).expectedInboundToken,
+            Access::receive(handle).expectedInboundToken);
+  EXPECT_EQ(Access::hostBound(channelCopy.deviceHandle()).dst, Access::hostBound(handle).dst);
+  EXPECT_EQ(Access::hostBound(channelCopy.deviceHandle()).src, Access::hostBound(handle).src);
   baseCopy = {};
   EXPECT_FALSE(weakSemaphore.expired());
   channelCopy = {};

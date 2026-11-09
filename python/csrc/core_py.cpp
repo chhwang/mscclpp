@@ -160,6 +160,10 @@ void register_core(nb::module_& m) {
       .value("HostNoAtomic", EndpointConfig::Ib::Mode::HostNoAtomic)
       .value("Device", EndpointConfig::Ib::Mode::Device);
 
+  nb::class_<EndpointConfig::Ib::GpuNetIo>(m, "CppEndpointConfigIbGpuNetIo")
+      .def(nb::init<>())
+      .def_rw("blue_flame_limit", &EndpointConfig::Ib::GpuNetIo::blueFlameLimit);
+
   nb::class_<EndpointConfig::Ib>(m, "CppEndpointConfigIb")
       .def(nb::init<>())
       .def(nb::init<int, int, int, int, int, int, int, int, EndpointConfig::Ib::Mode>(), nb::arg("device_index") = -1,
@@ -179,7 +183,8 @@ void register_core(nb::module_& m) {
       .def_rw("max_send_wr", &EndpointConfig::Ib::maxSendWr)
       .def_rw("max_recv_wr", &EndpointConfig::Ib::maxRecvWr)
       .def_rw("max_wr_per_send", &EndpointConfig::Ib::maxWrPerSend)
-      .def_rw("mode", &EndpointConfig::Ib::mode);
+      .def_rw("mode", &EndpointConfig::Ib::mode)
+      .def_rw("gpunetio", &EndpointConfig::Ib::gpuNetIo);
 
   nb::class_<RegisteredMemory>(m, "CppRegisteredMemory")
       .def(nb::init<>())

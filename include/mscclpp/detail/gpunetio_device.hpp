@@ -1,32 +1,40 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#ifndef MSCCLPP_GPUNETIO_DEVICE_HPP_
-#define MSCCLPP_GPUNETIO_DEVICE_HPP_
+#ifndef MSCCLPP_DETAIL_GPUNETIO_DEVICE_HPP_
+#define MSCCLPP_DETAIL_GPUNETIO_DEVICE_HPP_
 
 #include <cstdint>
+#include <mscclpp/config.hpp>
 
-#include "assert_device.hpp"
-#include "device.hpp"
+#include "../assert_device.hpp"
+#include "../device.hpp"
+#include "port_channel_assert.hpp"
 
 #if defined(MSCCLPP_DEVICE_COMPILE)
-#include "atomic_device.hpp"
+#include "../atomic_device.hpp"
 #endif
 
-#if defined(MSCCLPP_DEVICE_CUDA) && defined(USE_IBVERBS)
+#if defined(MSCCLPP_DEVICE_CUDA) && MSCCLPP_HAS_GPUNETIO && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 900)
+#define MSCCLPP_DETAIL_GPUNETIO_DEVICE_AVAILABLE 1
+#else
+#define MSCCLPP_DETAIL_GPUNETIO_DEVICE_AVAILABLE 0
+#endif
+
+#if MSCCLPP_DETAIL_GPUNETIO_DEVICE_AVAILABLE
 #include <doca_gpunetio_device.h>
 
-#include "bulk_device.hpp"
+#include "../bulk_device.hpp"
 #endif
 
-namespace mscclpp {
+namespace mscclpp::detail {
 
-namespace detail {
+inline constexpr uint32_t kPortChannelDefaultSmemSlots = 32;
 struct alignas(16) GpuNetIoWqeSlot {
   uint64_t storage[8];
 };
 
-#if defined(MSCCLPP_DEVICE_CUDA) && defined(USE_IBVERBS) && MSCCLPP_BULK_AVAILABLE
+#if MSCCLPP_DETAIL_GPUNETIO_DEVICE_AVAILABLE && MSCCLPP_BULK_AVAILABLE
 template <uint32_t SmemSlots>
 MSCCLPP_DEVICE_INLINE doca_gpu_dev_verbs_wqe* gpuNetIoWqeSlot(uint32_t slotIdx) {
   static_assert(SmemSlots > 0 && SmemSlots <= 1024);
@@ -35,7 +43,6 @@ MSCCLPP_DEVICE_INLINE doca_gpu_dev_verbs_wqe* gpuNetIoWqeSlot(uint32_t slotIdx) 
   return reinterpret_cast<doca_gpu_dev_verbs_wqe*>(slots[slotIdx].storage);
 }
 #endif
-}  // namespace detail
 
 /// A registered memory region that a GPUNetIO PortChannel can address.
 struct GpuNetIoMemoryDeviceHandle {
@@ -59,11 +66,8 @@ struct GpuNetIoDeviceHandle {
   /// without shared-memory WQE staging. Zero disables BlueFlame.
   uint32_t blueFlameLimit;
 
-  /// Default BlueFlame payload size limit (512 KiB).
-  static constexpr uint32_t kDefaultBlueFlameLimit = 512 * 1024;
-
   /// Default number of internal 64-byte BlueFlame shared-memory slots per CTA.
-  static constexpr uint32_t kDefaultSmemSlots = 32;
+  static constexpr uint32_t kDefaultSmemSlots = kPortChannelDefaultSmemSlots;
 
 #if defined(MSCCLPP_DEVICE_COMPILE)
   /// RDMA write of `size` bytes from a local region to a remote region.
@@ -76,10 +80,10 @@ struct GpuNetIoDeviceHandle {
                                  [[maybe_unused]] const GpuNetIoMemoryDeviceHandle& src,
                                  [[maybe_unused]] uint64_t srcOffset, [[maybe_unused]] uint64_t size,
                                  [[maybe_unused]] int slotIdx = -1) {
-#if defined(MSCCLPP_DEVICE_CUDA) && defined(USE_IBVERBS)
+#if MSCCLPP_DETAIL_GPUNETIO_DEVICE_AVAILABLE
     putImpl<docaConcurrency<Mode>(), SmemSlots>(dst, dstOffset, src, srcOffset, size, slotIdx);
 #else
-    MSCCLPP_ASSERT_DEVICE(false, "GPUNetIO is not enabled");
+    portChannelRequire(false, "Device backend is not available in this build");
 #endif
   }
 
@@ -96,7 +100,7 @@ struct GpuNetIoDeviceHandle {
   MSCCLPP_DEVICE_INLINE void accumulate([[maybe_unused]] const GpuNetIoMemoryDeviceHandle& dst,
                                         [[maybe_unused]] uint64_t dstOffset, [[maybe_unused]] int64_t value,
                                         [[maybe_unused]] int slotIdx = -1) {
-#if defined(MSCCLPP_DEVICE_CUDA) && defined(USE_IBVERBS)
+#if MSCCLPP_DETAIL_GPUNETIO_DEVICE_AVAILABLE
     const uint64_t addr = dst.addr + dstOffset;
     MSCCLPP_ASSERT_DEVICE(addr % sizeof(uint64_t) == 0, "accumulate address must be 8-byte aligned");
     auto* q = static_cast<doca_gpu_dev_verbs_qp*>(qp);
@@ -117,7 +121,7 @@ struct GpuNetIoDeviceHandle {
       submitDb<sharing>(q, index + 1);
     }
 #else
-    MSCCLPP_ASSERT_DEVICE(false, "GPUNetIO is not enabled");
+    portChannelRequire(false, "Device backend is not available in this build");
 #endif
   }
 
@@ -142,7 +146,7 @@ struct GpuNetIoDeviceHandle {
                                                [[maybe_unused]] const GpuNetIoMemoryDeviceHandle& acc,
                                                [[maybe_unused]] uint64_t accOffset, [[maybe_unused]] int64_t value,
                                                [[maybe_unused]] int slotIdx = -1) {
-#if defined(MSCCLPP_DEVICE_CUDA) && defined(USE_IBVERBS)
+#if MSCCLPP_DETAIL_GPUNETIO_DEVICE_AVAILABLE
     const uint64_t accAddr = acc.addr + accOffset;
     MSCCLPP_ASSERT_DEVICE(accAddr % sizeof(uint64_t) == 0, "putWithAccumulate address must be 8-byte aligned");
     if (size == 0 || size > DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE) {
@@ -164,7 +168,7 @@ struct GpuNetIoDeviceHandle {
       submitPutWithAccumulateDb<sharing>(q, index, dstAddr, dst.key, srcAddr, src.key, size, accAddr, acc.key, value);
     }
 #else
-    MSCCLPP_ASSERT_DEVICE(false, "GPUNetIO is not enabled");
+    portChannelRequire(false, "Device backend is not available in this build");
 #endif
   }
 
@@ -173,7 +177,7 @@ struct GpuNetIoDeviceHandle {
   /// @tparam Mode Caller concurrency scope supplied by the PortChannel device handle.
   template <auto Mode>
   MSCCLPP_DEVICE_INLINE void flush([[maybe_unused]] int64_t maxSpinCount) {
-#if defined(MSCCLPP_DEVICE_CUDA) && defined(USE_IBVERBS)
+#if MSCCLPP_DETAIL_GPUNETIO_DEVICE_AVAILABLE
     auto* q = static_cast<doca_gpu_dev_verbs_qp*>(qp);
     constexpr auto sharing = docaConcurrency<Mode>();
     const uint64_t ticket = doca_gpu_dev_verbs_atomic_read<uint64_t, sharing>(&q->sq_rsvd_index);
@@ -186,12 +190,12 @@ struct GpuNetIoDeviceHandle {
     }
     MSCCLPP_ASSERT_DEVICE(status == 0, "GPUNetIO completion queue error");
 #else
-    MSCCLPP_ASSERT_DEVICE(false, "GPUNetIO is not enabled");
+    portChannelRequire(false, "Device backend is not available in this build");
 #endif
   }
 
  private:
-#if defined(MSCCLPP_DEVICE_CUDA) && defined(USE_IBVERBS)
+#if MSCCLPP_DETAIL_GPUNETIO_DEVICE_AVAILABLE
   template <auto Mode>
   MSCCLPP_HOST_DEVICE_INLINE static constexpr doca_gpu_dev_verbs_resource_sharing_mode docaConcurrency() {
     using Concurrency = decltype(Mode);
@@ -364,20 +368,14 @@ struct GpuNetIoDeviceHandle {
     if constexpr (Sharing == DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE && SmemSlots > 0) {
       const auto index =
           doca_gpu_dev_verbs_reserve_wq_slots<Sharing, DOCA_GPUNETIO_VERBS_QP_SQ, DOCA_GPUNETIO_VERBS_CQ_64B>(q, count);
-      fn(detail::gpuNetIoWqeSlot<SmemSlots>(slotIdx), index);
+      fn(gpuNetIoWqeSlot<SmemSlots>(slotIdx), index);
     }
 #endif
   }
-#endif  // defined(MSCCLPP_DEVICE_CUDA) && defined(USE_IBVERBS)
+#endif  // defined(MSCCLPP_DEVICE_CUDA) && MSCCLPP_HAS_GPUNETIO
 #endif  // defined(MSCCLPP_DEVICE_COMPILE)
 };
 
-/// Device-side memory handle used by PortChannelDeviceHandle.
-using DeviceMemoryHandle = GpuNetIoMemoryDeviceHandle;
+}  // namespace mscclpp::detail
 
-/// Device-side backend handle used by BasePortChannelDeviceHandle.
-using DeviceBackendHandle = GpuNetIoDeviceHandle;
-
-}  // namespace mscclpp
-
-#endif  // MSCCLPP_GPUNETIO_DEVICE_HPP_
+#endif  // MSCCLPP_DETAIL_GPUNETIO_DEVICE_HPP_

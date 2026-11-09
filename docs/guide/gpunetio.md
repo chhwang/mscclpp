@@ -1,163 +1,163 @@
-# GPU-Initiated PortChannel with GPUNetIO
+# Device-backed PortChannel
 
-By default, `PortChannel` operations over InfiniBand are pushed by GPU threads into a FIFO and posted to the NIC by the
-host proxy thread of a `ProxyService`. With the optional GPUNetIO backend, GPU threads build the RDMA work requests and
-ring the NIC doorbell themselves through [DOCA GPUNetIO](https://github.com/NVIDIA-DOCA/gpunetio) (GDAKI), removing
-the proxy from the data path. The backend is selected per endpoint with `EndpointConfig::Ib::Mode::Device`.
-Construct a `PortChannel` without a proxy and call `deviceBackendHandle()` to obtain its GPU handle.
+`PortChannel` has two execution modes. Host channels send work through a `ProxyService`; Device channels post
+work directly from the GPU and do not use a proxy. Both return the same plain `PortChannelDeviceHandle` from
+`deviceHandle()`. The normal kernel parameter and calls do not change between modes.
+
+The current Device implementation uses [DOCA GPUNetIO](https://github.com/NVIDIA-DOCA/gpunetio). Its queue pointers,
+registration keys, and descriptors are implementation details, not channel API fields.
 
 ## Build
 
-The backend is built automatically for CUDA builds with InfiniBand support (`MSCCLPP_USE_IB=ON`, the default); no
-extra CMake option is needed. ROCm builds and builds with `MSCCLPP_USE_IB=OFF` skip it. At configure time, CMake
-fetches the GPUNetIO sources (see `cmake/GpuNetIo.cmake`) and compiles them into `libmscclpp`.
-To build without network access, point CMake to a local checkout of the same revision:
+CUDA builds with InfiniBand support (`MSCCLPP_USE_IB=ON`, the default) build the Device implementation automatically.
+ROCm and IB-off builds do not. CMake fetches the pinned GPUNetIO sources; for offline configuration, supply a local
+checkout of the same revision:
 
 ```bash
 cmake -DFETCHCONTENT_SOURCE_DIR_GPUNETIO=/path/to/gpunetio ..
 ```
+
+The installation includes the required inline implementation and dependency headers. The installed
+`mscclpp/config.hpp` records library capability, so standalone consuming kernels do not need `USE_IBVERBS` or
+GPUNetIO feature definitions. Compile consuming kernels as C++20 with the matching installed headers and library.
+Rebuild C++/Python consumers together after changing versions; handle ABI is not frozen.
 
 The GPUNetIO license is installed to `share/licenses/mscclpp/gpunetio`.
 
 ## Requirements
 
 - A Hopper or newer NVIDIA GPU and an RDMA NIC with a BlueFlame UAR
-  (`DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF`). Device code must target `sm_90` or newer.
-- RDMA atomics on both sides for `accumulate`; a GPUNetIO endpoint cannot connect to an endpoint in `HostNoAtomic`
-  mode.
-- The local endpoint must be on a GPU (`EndpointConfig::device.type == DeviceType::GPU`).
+  (`DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF`). Device kernels must target `sm_90` or newer.
+- RDMA atomics on both sides. A Device endpoint cannot connect to a `HostNoAtomic` endpoint.
+- A local GPU endpoint (`EndpointConfig::device.type == DeviceType::GPU`).
+
+Unsupported endpoint creation throws `InvalidUsage`. Unsupported Device kernel operations, unassigned handles,
+and incompatible Host concurrency modes fail explicitly with a device error, including in release builds. They
+never silently fall back to Host execution.
 
 ## Usage
 
-Create the connection with `EndpointConfig::Ib::Mode::Device` and construct the `PortChannel` directly from the
-semaphore and registered memories. No `ProxyService` is needed:
+Select Device mode per endpoint, exchange registered memory, and construct from a raw semaphore:
 
 ```cpp
 mscclpp::EndpointConfig cfg;
 cfg.transport = mscclpp::Transport::IB0;
 cfg.ib.mode = mscclpp::EndpointConfig::Ib::Mode::Device;
-auto connection = communicator->connect(cfg, remoteRank).get();
+auto connection = comm.connect(cfg, remoteRank).get();
+auto sema = comm.buildSemaphore(connection, remoteRank).get();
 
-auto localMem = communicator->registerMemory(buff, bytes, mscclpp::Transport::IB0);
-communicator->sendMemory(localMem, remoteRank);
-auto remoteMem = communicator->recvMemory(remoteRank).get();
-
-auto semaphore = std::make_shared<mscclpp::Device2DeviceSemaphore>(*communicator, connection);
-mscclpp::PortChannel channel(semaphore, remoteMem, localMem);
-auto deviceHandle = channel.deviceBackendHandle();
+auto localRegMem = comm.registerMemory(buff, bytes, cfg.transport);
+comm.sendMemory(localRegMem, remoteRank);
+auto remoteRegMem = comm.recvMemory(remoteRank).get();
+mscclpp::PortChannel channel(sema, remoteRegMem, localRegMem);
+auto handle = channel.deviceHandle();
 ```
 
-`BasePortChannel` and `PortChannel` are non-template host types for both backends. Their no-argument
-`deviceHandle()` method, nested `DeviceHandle` alias, and generic `mscclpp::deviceHandle(channel)` helper retain
-Host-backend behavior. Use `deviceBackendHandle()` explicitly for Device channels; it returns a
-`PortChannelDeviceHandleT<PortChannelBackend::Device>` (or the corresponding base handle).
-
-Extracting a Host handle from a Device channel, or a Device handle from a Host channel, throws
-`ErrorCode::InvalidUsage`. Both extraction methods reject default-constructed channels. Constructors reject null
-semaphore pointers, and Host constructors also reject a null proxy. Keep the channel alive while using its handle.
-Channel copies share semaphore ownership and progress; copying does not create an independent signal counter.
-Registered memory retains metadata, not ownership of application buffers, so keep those buffers alive too.
-
-`Device2DeviceSemaphore` is the move-only host semaphore for both Memory channels and Device-backend Port channels.
-Its no-argument `deviceHandle()` returns the existing Memory-facing handle and rejects Device-mode connections.
-`portDeviceHandle()` returns the existing Port-facing handle and rejects non-Device connections or a zero or
-non-8-byte-aligned remote token address. It resolves the remote address and registration key on every extraction.
-Port channel construction performs this check before returning. Both handle views use the same expected counter;
-extracting a handle does not allocate or reset a counter. The counter is allocated on the connection's local GPU,
-not the caller's current GPU, and construction restores the caller's current device.
-
-The deprecated C++ names `MemoryDevice2DeviceSemaphore` and `SmDevice2DeviceSemaphore` alias the new class.
-Use `Device2DeviceSemaphore` in new C++ code. The class rename changes C++ ABI symbols; rebuild C++ consumers.
-The separate host type `PortDevice2DeviceSemaphore` is removed; replace it with `Device2DeviceSemaphore`.
-The GPU handle type names are unchanged. Python keeps its existing `MemoryDevice2DeviceSemaphore` name.
-
-Exclusive-mode operations automatically use internal shared-memory WQE slots for BlueFlame submission when the
-transfer fits `device_.blueFlameLimit` (default: 512 KiB) and the calling thread has a slot:
+No `ProxyService` is constructed, started, or stopped. The same normal kernel works for either mode:
 
 ```cpp
-__global__ void send(mscclpp::PortChannelDeviceHandleT<mscclpp::PortChannelBackend::Device> channel, size_t bytes) {
-  using Concurrency = mscclpp::PortChannelDeviceHandle::Concurrency;
+__global__ void send(mscclpp::PortChannelDeviceHandle channel, size_t bytes) {
   if (threadIdx.x != 0) return;
-  channel.putWithSignal<Concurrency::Exclusive>(0, bytes);
-  channel.flush<Concurrency::Exclusive>();
+  channel.putWithSignal(0, bytes);
+  channel.flush();
 }
-
-// One block exclusively owns this QP.
-send<<<1, 32>>>(deviceHandle, bytes);
 ```
 
-Handles do not store shared-memory pointers and can be loaded directly from constant or global memory. Operations
-without an available slot, or transfers above `blueFlameLimit`, use regular doorbell submission without WQE staging.
+Host channels retain their [existing ProxyService IDs, factories and lifecycle](../tutorials/04-port-channel.md).
+`BasePortChannel` likewise returns a plain `BasePortChannelDeviceHandle` in either mode. Its memory-ID posting
+methods remain Host-only; Device applications bind `RegisteredMemory` through `PortChannel`, not public descriptors.
+The nested `DeviceHandle` aliases and generic `mscclpp::deviceHandle(channel)` helper work for both modes.
 
-In the kernel, `put`, `signal`, `putWithSignal`, `putWithSignalAndFlush`, `flush`, `accumulate`, `wait` and `poll`
-behave as for proxy-backed channels. `flush` waits for the local completion of all work requests posted on the queue
-pair.
+The proxy-free raw constructors reject Host connections. Host constructors reject Device connections or null
+proxies, and constructors taking explicit owner pointers reject null owners. Device constructors also reject uninitialized registered regions. Extraction rejects unassigned channels
+and invalid connection state. Device construction/extraction validates that the remote signal token is nonzero and
+8-byte aligned, resolving current registration metadata rather than caching it in a semaphore handle.
 
-`signal` and `accumulate` use an RDMA atomic fetch-and-add, which allows any number of writers to the same word.
-Device-mode channels also provide `putWithAccumulate`, a put followed by an accumulate, posted together;
-`putWithSignal` is `putWithAccumulate` on the semaphore. The responder applies an atomic only after placing the data
-of earlier RDMA writes on the same queue pair, so observing the updated word guarantees that those writes are visible.
-A plain RDMA write gives no such guarantee, even with strong ordering, because packets may be placed out of order at
-the responder.
+Raw construction creates an internal semaphore owner, like `MemoryChannel` raw construction. Copies share its
+counter and lifetime; separate constructions from the same raw semaphore create separate logical expected counters.
+Extraction does not allocate or reset a counter. Keep a channel copy and the application buffers alive during GPU
+use: registered memory retains metadata, not buffer ownership. Advanced callers can supply a shared
+`Device2DeviceSemaphore` owner when they intentionally share progress across channels. Its expected counter is
+allocated on the endpoint GPU while restoring the caller's current device.
 
-Only `port` and `gidIndex` of `EndpointConfig::Ib` are used in this mode; queue sizes are chosen by the backend.
-Small `put` and `putWithSignal` payloads are embedded in the work request rather than read separately by the NIC.
+`Device2DeviceSemaphore::deviceHandle()` remains Memory-facing and rejects Device connections. Port signaling is
+exposed through the channel, not a second public semaphore/transport descriptor API. The deprecated C++ names
+`MemoryDevice2DeviceSemaphore` and `SmDevice2DeviceSemaphore` alias the actual `Device2DeviceSemaphore` class.
+Python keeps its existing `MemoryDevice2DeviceSemaphore` name.
 
-Callers must make source data ready before `put` or `putWithSignal`, synchronizing with its producers as needed.
-These operations rely on DOCA's queue-publication release ordering rather than adding a full system fence for
-every submission. Keep non-inline source buffers unchanged until their transfers complete.
+## Ordering and completion
 
-### Queue pair concurrency and BlueFlame configuration
+`put`, `signal`, `putWithSignal`, `putWithSignalAndFlush`, `flush`, `accumulate`, `wait` and `poll` retain their
+channel meanings. Device `flush` waits for local completion of work posted so far on the queue pair.
 
-Channel handles expose a nested `Concurrency` type (`mscclpp::PortChannelDeviceHandle::Concurrency`).
-The type is defined in `BasePortChannelDeviceHandle` in `port_channel_device.hpp` and shared by both backends.
-For device-backed channels it describes concurrent access to the underlying queue pair, not ownership of the
-PortChannel object. The default is `Concurrency::Device`, allowing callers across the device. Callers may instead
-select `Concurrency::Block` for callers confined to one thread block, or `Concurrency::Exclusive` when the caller
-serializes access, as a template argument to posting and `flush` methods.
+Device `signal` and `accumulate` use RDMA atomic fetch-and-add. `putWithAccumulate` posts a put followed by an
+atomic add; `putWithSignal` uses the signal token as that add's target. The responder applies the atomic after
+placing earlier writes on the same queue pair, so observing it publishes those writes. A plain RDMA write alone
+provides no such visibility guarantee. `putWithAccumulate` is Device-only and explicitly rejects Host handles.
 
-Host-backed channels accept the same template argument but only support `Concurrency::Device`; other values produce
-a compile-time error. Calls without an explicit template argument continue to use `Device` for either backend.
+Make source data ready before posting, synchronizing with its producers as needed. Queue publication uses DOCA's
+release ordering rather than adding a full system fence per submission. Keep non-inline source buffers unchanged
+until transfers complete. Small payloads can be embedded in the work request rather than DMA-read separately.
 
-`device_.blueFlameLimit` controls the maximum payload size (in bytes) submitted through BlueFlame (default:
-`kDefaultBlueFlameLimit = 512 * 1024`; set to `0` to disable BlueFlame or adjust it to change which transfer sizes use
-BlueFlame). Payloads above this limit write their WQEs directly to the GPU-resident send queue and ring the regular
-doorbell, matching NCCL GIN's `submit_db` path.
-Only `Concurrency::Exclusive` operations submit through BlueFlame. The NIC executes a BlueFlame work request directly
-only if all earlier ones were already submitted, which concurrent callers cannot ensure without serializing each
-other, so `Block` and `Device` operations always ring the regular doorbell.
+## Concurrency and scratch capacity
 
-### Internal shared-memory slots
+Use `PortChannelDeviceHandle::Concurrency` as the first operation template argument:
 
-`PortChannelDeviceHandleT<Backend, SmemSlots>` and `BasePortChannelDeviceHandleT<Backend, SmemSlots>` configure the
-internal shared-memory capacity at compile time. The default is 32 slots (2 KiB per CTA); use
-`channel.deviceBackendHandle<8>()` for eight slots, or `channel.deviceBackendHandle<0>()` to disable BlueFlame
-without allocating scratch. The maximum is 1024 slots; larger capacities produce a compile-time error.
+- `Device` (default): concurrent callers may span the GPU. Supported by both backends.
+- `Block`: Device callers are confined to one CTA.
+- `Exclusive`: Device callers serialize access to the queue pair.
 
-The default slot index is the linear thread index, including all three block dimensions. Posting methods accept an
-optional `slotIdx` (`-1` selects the default); out-of-range indices fall back to regular doorbells. For example:
+Host handles reject `Block` and `Exclusive` at runtime, even in release kernels. A common handle type cannot reject
+these modes at compile time based on the object's runtime backend. Choose the default for kernels shared by modes.
+
+The second template argument selects internal shared-memory slots per CTA, not a different handle type:
 
 ```cpp
-using Concurrency = mscclpp::PortChannelDeviceHandle::Concurrency;
-channel.put<Concurrency::Exclusive>(dstOffset, srcOffset, bytes, slotIdx);
-channel.signal<Concurrency::Exclusive>(slotIdx);
+using C = mscclpp::PortChannelDeviceHandle::Concurrency;
+channel.put<C::Exclusive, 8>(dstOffset, srcOffset, bytes, slotIdx);
+channel.signal<C::Exclusive, 8>(slotIdx);
+channel.flush<C::Exclusive>();
 ```
 
-For `put` and `putWithSignal`, specify both source and destination offsets when passing an explicit index, avoiding
-ambiguity with the existing two-argument overloads. For `putWithSignalAndFlush`, the index follows `maxSpinCount`.
+The default is 32 slots (2 KiB); zero disables scratch submission without allocating scratch. The maximum is 1024;
+larger capacities produce a compile-time error. Host operations do not use these slots. Handles contain no
+shared-memory pointers and can be stored in constant/global memory.
 
-Slots are 64 bytes, 16-byte aligned, and shared across all handles with the same capacity in a CTA. Concurrent posting
-threads must use distinct indices, even when they own different QPs. BlueFlame waits for async source consumption
-before returning, so one thread can reuse a slot sequentially across QPs without an extra barrier or flush.
-Prefer one capacity per kernel: different capacities instantiate separate scratch arrays. Scratch is statically
-allocated for compiled BlueFlame paths, so runtime doorbell fallback does not reduce its footprint. Large capacities
-must respect the kernel's shared-memory limits; `Block` and `Device` operations do not use this scratch.
+The default `slotIdx=-1` is the linear CTA thread index, including all block dimensions. Out-of-range indices use
+regular doorbells. Pass both offsets to `put`/`putWithSignal` when specifying a slot; for `putWithSignalAndFlush`,
+the slot follows `maxSpinCount`. Slots are 64 bytes, 16-byte aligned, and shared across handles using the same
+capacity in a CTA. Concurrent posting threads must use distinct indices, including when using different QPs.
+Submission waits for async source consumption, so one thread can reuse a slot sequentially across QPs.
+
+Prefer one capacity per kernel: different capacities instantiate separate arrays. Scratch is statically allocated
+for compiled scratch paths; runtime fallback does not remove its footprint. Large capacities must respect kernel
+shared-memory limits. `Block` and `Device` operations use regular doorbells, not scratch.
+
+## Endpoint-specific tuning
+
+Only Exclusive operations can submit through BlueFlame. Concurrent callers cannot ensure all earlier WQEs were
+submitted before a direct BlueFlame WQE, so Block/Device calls always use regular doorbells.
+
+Configure the payload threshold before connecting:
+
+```cpp
+cfg.ib.gpuNetIo.blueFlameLimit = 512 * 1024; // Default: 512 KiB.
+// cfg.ib.gpuNetIo.blueFlameLimit = 0;      // Disable BlueFlame for this endpoint.
+```
+
+This policy is private in extracted handles and is not mutable at the channel/kernel API. Larger transfers use
+regular doorbells. A zero threshold disables BlueFlame but does not remove scratch compiled into an Exclusive
+kernel; use a scratch capacity of zero when that footprint must disappear. Python exposes this endpoint setting as
+`cfg.ib.gpunetio.blue_flame_limit`.
+
+The implementation also uses `port` and `gidIndex`; queue sizes are chosen internally. Host/HostNoAtomic ignore
+`gpuNetIo` settings.
 
 ## Limitations
 
-- CQ initialization has known upstream error-handling issues when its CUDA copy fails; see
+- CQ initialization has known upstream error handling issues on CUDA-copy failure; see
   [NVIDIA-DOCA/gpunetio#23](https://github.com/NVIDIA-DOCA/gpunetio/issues/23). No local workaround is applied.
-- Host-side `Connection` operations (`write`, `updateAndSync`, `accumulate`, `flush`) and `Host2DeviceSemaphore::signal`
-  are not supported on GPUNetIO connections and throw `InvalidUsage`.
-- On RoCE devices only port 1 is supported (the pinned DOCA GPUNetIO resolves the destination MAC on port 1).
+- Host-side `Connection` operations (`write`, `updateAndSync`, `accumulate`, `flush`) and
+  `Host2DeviceSemaphore::signal` are unsupported on Device connections and throw `InvalidUsage`.
+- On RoCE devices only port 1 is supported by the pinned implementation's destination-MAC resolution.
 - `accumulate` requires an 8-byte-aligned destination offset.

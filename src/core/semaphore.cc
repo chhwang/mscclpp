@@ -230,8 +230,7 @@ MSCCLPP_API_CPP Device2DeviceSemaphore::DeviceHandle Device2DeviceSemaphore::dev
   auto semaphore = semaphore_;
   if (BaseConnection::getImpl(semaphore.connection())->isDeviceBackend()) {
     THROW(CONN, Error, ErrorCode::InvalidUsage,
-          "Device2DeviceSemaphore::deviceHandle() does not support PortChannel device-mode connections; use "
-          "portDeviceHandle()");
+          "Device2DeviceSemaphore::deviceHandle() does not support Device-mode connections; use PortChannel");
   }
   DeviceHandle device;
   device.remoteInboundToken = reinterpret_cast<uint64_t*>(semaphore_.remoteMemory().data());
@@ -240,19 +239,12 @@ MSCCLPP_API_CPP Device2DeviceSemaphore::DeviceHandle Device2DeviceSemaphore::dev
   return device;
 }
 
-MSCCLPP_API_CPP PortDevice2DeviceSemaphoreDeviceHandle Device2DeviceSemaphore::portDeviceHandle() const {
+MSCCLPP_API_CPP Host2DeviceSemaphoreDeviceHandle Device2DeviceSemaphore::portReceiveHandle() const {
   auto semaphore = semaphore_;
-  auto& conn = BaseConnection::getImpl(semaphore.connection());
-  if (!conn->isDeviceBackend()) {
-    THROW(CONN, Error, ErrorCode::InvalidUsage,
-          "Device2DeviceSemaphore::portDeviceHandle() requires a PortChannel device-mode connection");
+  if (!BaseConnection::getImpl(semaphore.connection())->isDeviceBackend()) {
+    THROW(CONN, Error, ErrorCode::InvalidUsage, "PortChannel without a host proxy requires a Device-mode connection");
   }
-  const auto remoteInboundToken = conn->getDeviceMemoryInfo(semaphore_.remoteMemory());
-  if (remoteInboundToken.addr == 0 || remoteInboundToken.addr % sizeof(uint64_t) != 0) {
-    THROW(CONN, Error, ErrorCode::InvalidUsage, "remote semaphore token is not addressable in PortChannel device mode");
-  }
-  return {reinterpret_cast<uint64_t*>(semaphore_.localMemory().data()), expectedInboundToken_.get(),
-          remoteInboundToken};
+  return {reinterpret_cast<uint64_t*>(semaphore_.localMemory().data()), expectedInboundToken_.get()};
 }
 
 }  // namespace mscclpp

@@ -93,6 +93,9 @@ class Device2DeviceSemaphore {
   Semaphore semaphore_;
   detail::UniqueGpuPtr<uint64_t> expectedInboundToken_;
 
+  Host2DeviceSemaphoreDeviceHandle portReceiveHandle() const;
+  friend struct BasePortChannel;
+
  public:
   /// Constructor. Allocates the expected counter on the local endpoint's GPU and restores the caller's device.
   /// @param semaphore The semaphore associated with the connection.
@@ -114,12 +117,6 @@ class Device2DeviceSemaphore {
   /// Returns the memory-facing device-side handle.
   /// @throws Error with ErrorCode::InvalidUsage for a PortChannel device-mode connection.
   DeviceHandle deviceHandle() const;
-
-  /// Returns a device-backend PortChannel semaphore handle sharing this semaphore's expected counter.
-  /// Resolves the remote token's current address and registration key on every extraction.
-  /// @return The port handle, valid while this semaphore remains alive.
-  /// @throws Error with ErrorCode::InvalidUsage for a non-device-mode connection or a zero/misaligned remote token.
-  PortDevice2DeviceSemaphoreDeviceHandle portDeviceHandle() const;
 };
 
 /// @deprecated Use Device2DeviceSemaphore instead.
