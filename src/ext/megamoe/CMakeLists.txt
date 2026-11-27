@@ -11,31 +11,12 @@ if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS "13.0")
     message(FATAL_ERROR "Native MegaMoE requires CUDA nvcc/ptxas >=13.0.")
 endif()
 
-set(MSCCLPP_MEGAMOE_CUTLASS_ROOT "" CACHE PATH "CUTLASS source directory for native MegaMoE")
-if(NOT MSCCLPP_MEGAMOE_CUTLASS_ROOT)
-    include(FetchContent)
-    FetchContent_Declare(megamoe_cutlass
-        GIT_REPOSITORY https://github.com/NVIDIA/cutlass.git
-        GIT_TAG 147295a3d4b75f3aeff247c25b8927cea9a7006a
-    )
-    FetchContent_GetProperties(megamoe_cutlass)
-    if(NOT megamoe_cutlass_POPULATED)
-        FetchContent_Populate(megamoe_cutlass)
-    endif()
-    set(MSCCLPP_MEGAMOE_CUTLASS_ROOT "${megamoe_cutlass_SOURCE_DIR}")
-endif()
-if(NOT EXISTS "${MSCCLPP_MEGAMOE_CUTLASS_ROOT}/include/cutlass/gemm/collective/sm100_blockscaled_mma_warpspecialized.hpp" OR
-   NOT EXISTS "${MSCCLPP_MEGAMOE_CUTLASS_ROOT}/include/cutlass/gemm/collective/sm100_mma_warpspecialized_mixed_input.hpp")
-    message(FATAL_ERROR "MegaMoE needs CUTLASS with the SM100 block-scaled and mixed-input collectives. Set MSCCLPP_MEGAMOE_CUTLASS_ROOT.")
-endif()
-
 add_library(mscclpp_megamoe SHARED runtime.cc megamoe_w8a16.cu megamoe_w4a8.cu megamoe_launch.cu)
 target_include_directories(mscclpp_megamoe PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
 )
-target_include_directories(mscclpp_megamoe SYSTEM PRIVATE "${MSCCLPP_MEGAMOE_CUTLASS_ROOT}/include")
 target_compile_options(mscclpp_megamoe PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;--expt-extended-lambda>
 )
@@ -55,10 +36,16 @@ set(MEGAMOE_JIT_INSTALL_DIR "${INSTALL_PREFIX}/share/mscclpp/megamoe")
 install(FILES megamoe_w8a16.cu megamoe_w4a8.cu megamoe_launch.cu megamoe_jit.cu LICENSE.cutlass "${PROJECT_SOURCE_DIR}/LICENSE"
     DESTINATION "${MEGAMOE_JIT_INSTALL_DIR}")
 install(FILES
+    include/megamoe_accumulator_pipe.cuh
+    include/megamoe_activation_tma.hpp
     include/megamoe_collective.cuh
     include/megamoe_combine.cuh
+    include/megamoe_load_pipes.cuh
+    include/megamoe_stage_sync.cuh
+    include/megamoe_tma_issue.cuh
     include/megamoe_dispatch.cuh
     include/megamoe_math.cuh
+    include/megamoe_primitives.cuh
     include/megamoe_quantization.cuh
     include/megamoe_w4a8_collective.cuh
     include/megamoe_w4a8_roles.cuh

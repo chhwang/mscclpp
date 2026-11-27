@@ -37,7 +37,7 @@ template <int EpilogueThreads>
 MSCCLPP_DEVICE_INLINE void syncBeforeFc1ScratchWrite(int tokenOffset, bool interleaved) {
   if (tokenOffset == 0 && interleaved) bulkStoreWaitSource();
   if (tokenOffset > 0 || interleaved) {
-    cutlass::arch::NamedBarrier::sync(EpilogueThreads, cutlass::arch::ReservedNamedBarriers::EpilogueBarrier);
+    namedBarrierSync(EpilogueThreads, EpilogueBarrier);
   }
 }
 
@@ -75,7 +75,7 @@ template <int EpilogueThreads>
 MSCCLPP_DEVICE_INLINE void finalizeFc1TaskStores() {
   // FC2 loads hidden through TMA; order every generic store of this task before its completion release.
   fenceAsyncProxyGlobal();
-  cutlass::arch::NamedBarrier::sync(EpilogueThreads, cutlass::arch::ReservedNamedBarriers::EpilogueBarrier);
+  namedBarrierSync(EpilogueThreads, EpilogueBarrier);
 }
 
 template <ActivationDtype ActDtype>
@@ -161,7 +161,7 @@ struct Fc1ActivationPolicy<ActivationDtype::Mxfp8> {
       int column = 0;
       computeFc1HiddenCoord<Tiles>(task, tokenOffset, tokenInChunk, featureOffset, storageRow, column);
       if (threadIdx.x % ThreadsPerScale == 0) {
-        params.workspace.hiddenScale[params.fc2.layout_SFB(cute::make_coord(storageRow, column, 0))] = scale;
+        params.workspace.hiddenScale[params.fc2.layout_SFB(storageRow, column, 0)] = scale;
       }
       *reinterpret_cast<decltype(quantized)*>(params.workspace.quantizedHidden + size_t(storageRow) * intermediate +
                                               column) = quantized;
@@ -207,7 +207,7 @@ MSCCLPP_DEVICE_INLINE void activateFc1Chunk(const KernelParams& params, const Ta
   if (baseToken < validRows) {
     writeSwigluPairsToScratch<CtaFc1M, HalfTokens>(sharedStorage.epilogue.scratch, baseToken, outFeature, gate, up);
   }
-  cutlass::arch::NamedBarrier::sync(EpilogueThreads, cutlass::arch::ReservedNamedBarriers::EpilogueBarrier);
+  namedBarrierSync(EpilogueThreads, EpilogueBarrier);
 
   // 3. Reload contiguous token features and quantize/store hidden activations via ActivationDtype policy.
   const int tokenInChunk = threadIdx.x / ThreadsPerToken;
@@ -221,22 +221,6 @@ MSCCLPP_DEVICE_INLINE void activateFc1Chunk(const KernelParams& params, const Ta
 
   // 4. Order generic hidden stores before publishing FC1 tile completion.
   if (lastChunk) finalizeFc1TaskStores<EpilogueThreads>();
-}
-
-// 16-datapath TMEM loads return stmatrix fragments: for each 8-column group, thread t receives lanes t/4 and
-// t/4 + 8 at columns 2(t%4) and 2(t%4) + 1.
-template <int Groups>
-MSCCLPP_DEVICE_INLINE void loadFc2Accumulators(uint32_t address, uint32_t (&data)[4 * Groups]) {
-  using namespace cute;
-  if constexpr (Groups == 4) {
-    SM100_TMEM_LOAD_16dp256b4x::copy(address, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-                                     data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15]);
-  } else if constexpr (Groups == 2) {
-    SM100_TMEM_LOAD_16dp256b2x::copy(address, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
-  } else {
-    static_assert(Groups == 1);
-    SM100_TMEM_LOAD_16dp256b1x::copy(address, data[0], data[1], data[2], data[3]);
-  }
 }
 
 template <int LocalMode, class KernelParams>
@@ -299,8 +283,7 @@ MSCCLPP_DEVICE_INLINE void packFc2ChunkBf16(const KernelParams& params, const Ta
       mscclpp::f32x2 scaled = __fmul2_rn(make_float2(__uint_as_float(pair[0]), __uint_as_float(pair[1])), weights);
       words[i] = mscclpp::bit_cast<uint32_t>(mscclpp::to<mscclpp::bf16x2>(scaled));
     }
-    cute::SM90_U16x8_STSM_T::copy(words[0], words[1], words[2], words[3],
-                                  *reinterpret_cast<cute::uint128_t*>(rows + group * 8 * PackedRowStride));
+    storeTransposedB16x4(rows + group * 8 * PackedRowStride, words);
   }
 }
 
@@ -416,8 +399,6 @@ constexpr bool UseOutputOffload =
     (KernelParams::Collective::DispatchWarps >= 4) && (KernelParams::Collective::EpilogueTokens == 32) &&
     ((Schedule::EpilogueEnd - Schedule::EpilogueBegin) == 4) && ((Schedule::NumWarps - Schedule::DispatchEnd) >= 4);
 
-constexpr uint32_t OutputOffloadSlotEmptyBarrier = 0u;
-constexpr uint32_t OutputOffloadSlotFullBarrier = 1u;
 constexpr int OutputOffloadThreads = 256;
 
 template <class Schedule, class KernelParams, class Storage>
@@ -430,9 +411,9 @@ MSCCLPP_DEVICE_INLINE void runOutputStoreOffloadRole(const KernelParams& params,
     if (warpIdx < OffloadBegin || warpIdx >= Schedule::NumWarps) return;
     using Tiles = typename KernelParams::Tiles;
     constexpr int CtaTileM = Tiles::CtaM;
-    cutlass::arch::NamedBarrier::arrive(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
+    namedBarrierArrive(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
     while (true) {
-      cutlass::arch::NamedBarrier::sync(OutputOffloadThreads, OutputOffloadSlotFullBarrier);
+      namedBarrierSync(OutputOffloadThreads, OutputOffloadSlotFullBarrier);
       const OutputOffloadTask offloadTask = sharedStorage.outputOffloadTask;
       if (offloadTask.op() == OutputOffloadOp::Stop) break;
       if (offloadTask.op() == OutputOffloadOp::Store) {
@@ -475,20 +456,35 @@ MSCCLPP_DEVICE_INLINE void runOutputStoreOffloadRole(const KernelParams& params,
         }
         bulkStoreWaitSource();
       }
-      cutlass::arch::NamedBarrier::arrive(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
+      namedBarrierArrive(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
     }
     bulkStoreWait();
   }
 #endif
 }
 
-template <class Schedule, int LocalMode = 0, class KernelParams, class Storage, class Pipeline, class Accumulators>
+// Selected SM100_TMEM_LOAD_32dp32b8x from CUTLASS 147295a3d4b75f3aeff247c25b8927cea9a7006a
+// (cute/arch/copy_sm100.hpp). Copyright (c) 2023 - 2026 NVIDIA CORPORATION & AFFILIATES.
+// SPDX-License-Identifier: BSD-3-Clause; see ../LICENSE.cutlass.
+template <int ReadTokens>
+MSCCLPP_DEVICE_INLINE void loadFc1Accumulators(uint32_t address, uint32_t (&values)[ReadTokens]) {
+  static_assert(ReadTokens == 8 || ReadTokens == 16 || ReadTokens == 32);
+#pragma unroll
+  for (int token = 0; token < ReadTokens; token += 8) {
+    asm volatile("tcgen05.ld.sync.aligned.32x32b.x8.b32"
+                 "{%0, %1, %2, %3, %4, %5, %6, %7}, [%8];\n"
+                 : "=r"(values[token]), "=r"(values[token + 1]), "=r"(values[token + 2]), "=r"(values[token + 3]),
+                   "=r"(values[token + 4]), "=r"(values[token + 5]), "=r"(values[token + 6]), "=r"(values[token + 7])
+                 : "r"(address + token));
+  }
+}
+
+template <class Schedule, int LocalMode = 0, class KernelParams, class Storage, class Pipeline>
 MSCCLPP_DEVICE_INLINE void epilogue(const KernelParams& params, const Task& task, Storage& sharedStorage,
                                     Pipeline& pipeline, typename Pipeline::PipelineState& state,
-                                    Accumulators accumulators, int hidden, int intermediate,
+                                    uint32_t accumulators, int hidden, int intermediate,
                                     __bfloat16* finalOutput = nullptr, int nTokens = 0, bool interleaved = false) {
 #if MSCCLPP_BULK_AVAILABLE
-  using namespace cute;
   using Tiles = typename KernelParams::Tiles;
   constexpr int KernelTileN = Tiles::N;
   constexpr int CtaTileM = Tiles::CtaM;
@@ -500,9 +496,8 @@ MSCCLPP_DEVICE_INLINE void epilogue(const KernelParams& params, const Task& task
   constexpr bool OffloadOutput = UseOutputOffload<Schedule, LocalMode, KernelParams>;
   int warpIdx = threadIdx.x / WARP_SIZE;
   int laneIdx = threadIdx.x % WARP_SIZE;
-  auto matrix = accumulators(make_coord(_, _), _0{}, _0{}, state.index());
-  CUTE_STATIC_ASSERT_V(size<0>(matrix) == Int<CtaTileM>{});
-  CUTE_STATIC_ASSERT_V(size<1>(matrix) == Int<KernelTileN>{});
+  static_assert(CtaTileM == 128 && KernelTileN == 128);
+  const uint32_t matrix = accumulatorStage(accumulators, state.index());
   traceKernel(KernelTracePhase::EpilogueReady, true, int(task.fc1));
   pipeline.consumer_wait(state);
   traceKernel(KernelTracePhase::EpilogueReady, false, int(task.fc1));
@@ -511,19 +506,14 @@ MSCCLPP_DEVICE_INLINE void epilogue(const KernelParams& params, const Task& task
     bool lastChunk = tokenOffset + ChunkTokens >= task.tokens.nTokens;
     int readerGroup = threadIdx.x / CtaTileM;
     if (task.fc1) {
-      int readerThread = threadIdx.x % CtaTileM;
-      auto acc = local_tile(matrix, make_shape(Int<CtaTileM>{}, Int<ReadTokens>{}),
-                            make_coord(0, tokenOffset / ReadTokens + readerGroup));
-      auto copyOp = make_tmem_copy(SM100_TMEM_LOAD_32dp32b8x{}, acc);
-      auto threadCopy = copyOp.get_slice(readerThread);
-      auto source = threadCopy.partition_S(acc);
-      auto identity = make_identity_tensor(make_shape(Int<CtaTileM>{}, Int<ChunkTokens>{}));
-      auto readIdentity =
-          local_tile(identity, make_shape(Int<CtaTileM>{}, Int<ReadTokens>{}), make_coord(0, readerGroup));
-      auto coordinates = threadCopy.partition_D(readIdentity);
-      auto values = make_tensor<float>(shape(coordinates));
-      if (readerGroup * ReadTokens < validRows) copy(copyOp, source, values);
-      cutlass::arch::fence_view_async_tmem_load();
+      static_assert(CtaTileM == 128);
+      uint32_t values[ReadTokens];
+      if (readerGroup * ReadTokens < validRows) {
+        const uint32_t address = matrix + tokenOffset + readerGroup * ReadTokens +
+                                 uint32_t((warpIdx % 4 * 32) << 16);
+        loadFc1Accumulators(address, values);
+      }
+      waitTmemLoad();
       if (lastChunk) pipeline.consumer_release(state);
       traceKernel(KernelTracePhase::ActivationQuantize, true, tokenOffset);
       activateFc1Chunk<EpilogueThreads, ChunkTokens, LocalMode>(params, task, sharedStorage, values, tokenOffset,
@@ -535,16 +525,16 @@ MSCCLPP_DEVICE_INLINE void epilogue(const KernelParams& params, const Task& task
     // FC2 reads both 16-lane halves of the warp's TMEM lane quarter as stmatrix fragments.
     uint32_t accumulator[2][ReadTokens / 2];
     if (readerGroup * ReadTokens < validRows) {
-      uint32_t address = raw_pointer_cast(matrix.data()) + tokenOffset + readerGroup * ReadTokens;
+      uint32_t address = matrix + tokenOffset + readerGroup * ReadTokens;
 #pragma unroll
       for (int half = 0; half < 2; ++half)
         loadFc2Accumulators<ReadTokens / 8>(address + uint32_t((warpIdx % 4 * 32 + half * 16) << 16),
                                             accumulator[half]);
     }
-    cutlass::arch::fence_view_async_tmem_load();
+    waitTmemLoad();
     if (lastChunk) pipeline.consumer_release(state);
     if constexpr (OffloadOutput) {
-      cutlass::arch::NamedBarrier::sync(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
+      namedBarrierSync(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
       if (readerGroup * ReadTokens < validRows)
         packFc2Chunk<ReadTokens, LocalMode>(params, task, sharedStorage, accumulator, tokenOffset, validRows,
                                             readerGroup);
@@ -552,15 +542,15 @@ MSCCLPP_DEVICE_INLINE void epilogue(const KernelParams& params, const Task& task
         sharedStorage.outputOffloadTask =
             OutputOffloadTask::makeStore(task.block * KernelTileN + tokenOffset, validRows, task.m);
       bulkFence();
-      cutlass::arch::NamedBarrier::arrive(OutputOffloadThreads, OutputOffloadSlotFullBarrier);
+      namedBarrierArrive(OutputOffloadThreads, OutputOffloadSlotFullBarrier);
     } else {
       bulkStoreWaitSource();
-      cutlass::arch::NamedBarrier::sync(EpilogueThreads, cutlass::arch::ReservedNamedBarriers::EpilogueBarrier);
+      namedBarrierSync(EpilogueThreads, EpilogueBarrier);
       if (readerGroup * ReadTokens < validRows)
         packFc2Chunk<ReadTokens, LocalMode>(params, task, sharedStorage, accumulator, tokenOffset, validRows,
                                             readerGroup);
       bulkFence();
-      cutlass::arch::NamedBarrier::sync(EpilogueThreads, cutlass::arch::ReservedNamedBarriers::EpilogueBarrier);
+      namedBarrierSync(EpilogueThreads, EpilogueBarrier);
       traceKernel(KernelTracePhase::Fc2Store, true, tokenOffset);
       storeOutputChunk<EpilogueWarps, LocalMode>(params, task, sharedStorage, tokenOffset, validRows, hidden, warpIdx,
                                                  laneIdx, finalOutput, nTokens);
@@ -574,11 +564,11 @@ MSCCLPP_DEVICE_INLINE void epilogue(const KernelParams& params, const Task& task
 #endif
 }
 
-template <class Schedule, int LocalMode = 0, class KernelParams, class Storage, class Accumulate, class Accumulators>
+template <class Schedule, int LocalMode = 0, class KernelParams, class Storage, class Accumulate>
 MSCCLPP_DEVICE_INLINE void runEpilogueRole(const KernelParams& params, Storage& sharedStorage, Accumulate& pipeline,
-                                           Accumulators accumulators, int hidden, int intermediate, int clusterIdx,
+                                           uint32_t accumulators, int hidden, int intermediate, int clusterIdx,
                                            int nTasks, __bfloat16* finalOutput = nullptr, int nTokens = 0) {
-  cutlass::arch::warpgroup_reg_alloc<KernelParams::Collective::EpilogueRegisters>();
+  warpgroupRegAlloc<KernelParams::Collective::EpilogueRegisters>();
   typename Accumulate::PipelineState state;
   const int nTokenTiles = taskTokenTiles(params, nTokens);
   const int nLocalExperts = params.config.numExperts / params.config.worldSize;
@@ -594,9 +584,9 @@ MSCCLPP_DEVICE_INLINE void runEpilogueRole(const KernelParams& params, Storage& 
       if (i + nClusters < nTasks) nextTask = scheduler.taskAt(params, i + nClusters, nTokens);
       if constexpr (OffloadOutput) {
         if (task.fc1 && interleaved && prevWasFc2) {
-          cutlass::arch::NamedBarrier::sync(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
+          namedBarrierSync(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
           if (threadIdx.x == 0) sharedStorage.outputOffloadTask = OutputOffloadTask::makeNoop();
-          cutlass::arch::NamedBarrier::arrive(OutputOffloadThreads, OutputOffloadSlotFullBarrier);
+          namedBarrierArrive(OutputOffloadThreads, OutputOffloadSlotFullBarrier);
         }
       }
       epilogue<Schedule, LocalMode>(params, task, sharedStorage, pipeline, state, accumulators, hidden, intermediate,
@@ -606,9 +596,9 @@ MSCCLPP_DEVICE_INLINE void runEpilogueRole(const KernelParams& params, Storage& 
   }
 #if MSCCLPP_BULK_AVAILABLE
   if constexpr (OffloadOutput) {
-    cutlass::arch::NamedBarrier::sync(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
+    namedBarrierSync(OutputOffloadThreads, OutputOffloadSlotEmptyBarrier);
     if (threadIdx.x == 0) sharedStorage.outputOffloadTask = OutputOffloadTask::makeStop();
-    cutlass::arch::NamedBarrier::arrive(OutputOffloadThreads, OutputOffloadSlotFullBarrier);
+    namedBarrierArrive(OutputOffloadThreads, OutputOffloadSlotFullBarrier);
   } else {
     // Every lane may own FC2 bulk stores; they must complete before the CTA publishes its completion.
     bulkStoreWait();

@@ -4,10 +4,6 @@
 #ifndef MSCCLPP_EXT_MEGAMOE_QUANTIZATION_CUH_
 #define MSCCLPP_EXT_MEGAMOE_QUANTIZATION_CUH_
 
-#if !(__CUDACC_VER_MAJOR__ > 13 || (__CUDACC_VER_MAJOR__ == 13 && __CUDACC_VER_MINOR__ >= 3))
-#include <cutlass/numeric_conversion.h>
-#endif
-
 #include "megamoe_device.cuh"
 
 namespace MSCCLPP_MEGAMOE_KERNEL_NAMESPACE::detail {
@@ -68,10 +64,14 @@ MSCCLPP_DEVICE_INLINE uint32_t decodeScaledPairWithExpandedScale(uint16_t weight
 #if __CUDACC_VER_MAJOR__ > 13 || (__CUDACC_VER_MAJOR__ == 13 && __CUDACC_VER_MINOR__ >= 3)
   asm("cvt.rn.bf16x2.e4m3x2 %0, %1;" : "=r"(decoded) : "h"(weights));
 #else
-  using Weight = cutlass::float_e4m3_t;
-  using PackedWeights = cutlass::Array<Weight, 2>;
-  decoded = cuda::std::bit_cast<uint32_t>(
-      cutlass::NumericArrayConverter<cutlass::bfloat16_t, Weight, 2>{}(cuda::std::bit_cast<PackedWeights>(weights)));
+  // Selected widening from CUTLASS 147295a3d4b75f3aeff247c25b8927cea9a7006a
+  // (cutlass/numeric_conversion.h), copyright 2023 - 2026 NVIDIA CORPORATION & AFFILIATES.
+  // SPDX-License-Identifier: BSD-3-Clause; see ../LICENSE.cutlass.
+  // Keep the FP16 -> FP32 -> BF16 sequence and packed operand order.
+  uint32_t halfPair;
+  asm volatile("{\ncvt.rn.f16x2.e4m3x2 %0, %1;\n}\n" : "=r"(halfPair) : "h"(weights));
+  const float2 values = __half22float2(__half2(cuda::std::bit_cast<__half2_raw>(halfPair)));
+  asm("cvt.rn.bf16x2.f32 %0, %1, %2;\n" : "=r"(decoded) : "f"(values.y), "f"(values.x));
 #endif
   asm("mul.rn.bf16x2 %0, %1, %2;" : "=r"(result) : "r"(decoded), "r"(expandedScale));
   return result;

@@ -176,7 +176,7 @@ class MegaMoE:
         if not is_available():
             raise RuntimeError(
                 "MSCCL++ was built without native MegaMoE. Rebuild with "
-                "-DMSCCLPP_BUILD_EXT_MEGAMOE=ON using CUDA nvcc/ptxas >=13.0 and CUTLASS."
+                "-DMSCCLPP_BUILD_EXT_MEGAMOE=ON using CUDA nvcc/ptxas >=13.0."
             )
         import torch
         from mscclpp import _mscclpp

@@ -33,16 +33,18 @@ MSCCLPP_DEVICE_INLINE float2 swigluPair(float2 gate, float2 up) {
 
 // Exchanges half of the gate (lanes 0..15) and up (lanes 16..31) values intra-warp across WARP_SIZE / 2 so each
 // half-warp holds complete (gate, up) pairs for HalfTokens tokens.
-template <int HalfTokens, class Values>
-MSCCLPP_DEVICE_INLINE void exchangeGateUpHalfIntraWarp(const Values& values, bool isUpHalf, float (&gate)[HalfTokens],
-                                                       float (&up)[HalfTokens]) {
+template <int HalfTokens>
+MSCCLPP_DEVICE_INLINE void exchangeGateUpHalfIntraWarp(const uint32_t (&values)[2 * HalfTokens], bool isUpHalf,
+                                                       float (&gate)[HalfTokens], float (&up)[HalfTokens]) {
   static_assert(WARP_SIZE == 32);
 #pragma unroll
   for (int i = 0; i < HalfTokens; ++i) {
-    float sentValue = isUpHalf ? values(i) : values(i + HalfTokens);
+    const float first = __uint_as_float(values[i]);
+    const float second = __uint_as_float(values[i + HalfTokens]);
+    float sentValue = isUpHalf ? first : second;
     float peerValue = __shfl_xor_sync(0xffffffff, sentValue, WARP_SIZE / 2);
-    gate[i] = isUpHalf ? peerValue : values(i);
-    up[i] = isUpHalf ? values(i + HalfTokens) : peerValue;
+    gate[i] = isUpHalf ? peerValue : first;
+    up[i] = isUpHalf ? second : peerValue;
   }
 }
 
