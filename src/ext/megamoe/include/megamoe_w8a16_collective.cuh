@@ -1,200 +1,171 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 //
-// The sub-tile TMA and pipeline extensions adapt CUTLASS's SM100 mixed-input collective:
+// Selected SM100 mixed-input layout and descriptor fields from CUTLASS
+// 147295a3d4b75f3aeff247c25b8927cea9a7006a. See ../LICENSE.cutlass.
 // Copyright (c) 2023 - 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: BSD-3-Clause
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are met:
-// 1. Redistributions of source code must retain the above copyright notice, this
-//    list of conditions and the following disclaimer.
-// 2. Redistributions in binary form must reproduce the above copyright notice,
-//    this list of conditions and the following disclaimer in the documentation
-//    and/or other materials provided with the distribution.
-// 3. Neither the name of the copyright holder nor the names of its contributors
-//    may be used to endorse or promote products derived from the distribution
-//    without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef MSCCLPP_EXT_MEGAMOE_W8A16_COLLECTIVE_CUH_
 #define MSCCLPP_EXT_MEGAMOE_W8A16_COLLECTIVE_CUH_
 
-#include <cute/tensor.hpp>
-#include <cutlass/gemm/collective/collective_builder.hpp>
+#include <cstddef>
+
+#include "megamoe_activation_tma.hpp"
+#include "megamoe_primitives.cuh"
+#include "megamoe_tma_issue.cuh"
 
 namespace MSCCLPP_MEGAMOE_KERNEL_NAMESPACE::detail {
 
-// Extends CUTLASS's SM100 mixed-input CollectiveMma (`Base`) with sub-tile activation TMA descriptors (N=64, N=32),
-// 2-CTA runtime row shifting, and adaptive L2 cache hints for weights and activations.
-template <class Base, int TileN, int TileK, int LoadStages>
-struct W8A16Mainloop : Base {
-  static_assert(TileN == 128);
+__host__ __device__ constexpr int w8RawOffset(int stage, int lane, int k) {
+  // SW128: the low three row bits select the 16-byte K swizzle.
+  return stage * 16384 + lane * 128 + (k ^ ((lane & 7) * 16));
+}
+__host__ __device__ constexpr int w8ScaleOffset(int stage, int lane, int k32) {
+  return stage * 512 + k32 * 128 + lane;
+}
+__host__ __device__ constexpr uint32_t w8WeightAddress(uint32_t base, int stage, int k16, int lane = 0) {
+  return base + stage * 64 + k16 * 8 + ((uint32_t(lane) & 96u) << 16);
+}
+__host__ __device__ constexpr uint64_t w8ActivationDescriptor(uint32_t base, int stage, int k16) {
+  return w4SmemDescriptor(base, stage * 16384 + (k16 / 4) * 8192 + (k16 % 4) * 32, false);
+}
+__host__ __device__ constexpr uint32_t w8Instruction(int rows) {
+  // M=256, K-major BF16 A and B, FP32 C; N is rounded up to 16.
+  return (16u << 24) | (uint32_t((rows + 15) / 16 * 2) << 17) | (1u << 10) | (1u << 7) | (1u << 4);
+}
 
-  using ClusterShape = cute::Shape<cute::_2, cute::_1, cute::_1>;
-  using typename Base::Arguments;
-  using typename Base::AtomThrShapeMNK;
-  using typename Base::ElementA;
-  using typename Base::ElementAMma;
-  using typename Base::ElementB;
-  using typename Base::GmemTiledCopyB;
-  using typename Base::Load2MmaPipeline;
-  using typename Base::Load2MmaPipelineState;
-  using typename Base::Load2TransformPipeline;
-  using typename Base::Load2TransformPipelineState;
-  using typename Base::SmemLayoutAtomB;
-  using typename Base::TensorStorage;
-  using typename Base::TiledMma;
-
-  template <int SubTileN>
-  struct SubtileActivationTma {
-    using SubTileShape = cute::Shape<cute::_256, cute::Int<SubTileN>, cute::Int<TileK>>;
-    using SubTiledMma = decltype(cutlass::gemm::collective::detail::sm100_make_trivial_mixed_input_tiled_mma<
-                                 ElementAMma, ElementB, float, SubTileShape, ClusterShape, cute::UMMA::Major::K,
-                                 cute::UMMA::Major::K, cutlass::gemm::KernelTmaWarpSpecialized2SmMixedInputSm100>());
-    using SubSmemLayoutB = decltype(cute::UMMA::tile_to_mma_shape(
-        SmemLayoutAtomB{},
-        cute::append(
-            cute::partition_shape_B(SubTiledMma{}, cute::make_shape(cute::Int<SubTileN>{}, cute::Int<TileK>{})),
-            cute::Int<LoadStages>{}),
-        cute::Step<cute::_1, cute::_2, cute::_3>{}));
-    static constexpr uint32_t TransactionBytes =
-        cutlass::bits_to_bytes(cute::size(AtomThrShapeMNK{}) * cute::cosize(cute::take<0, 3>(SubSmemLayoutB{})) *
-                               cute::sizeof_bits_v<ElementB>);
-
-    static cute::TmaDescriptor makeDescriptor(const ProblemShape& shape, const Arguments& args) {
-      using namespace cute;
-      auto [m, n, k, l] = shape;
-      (void)m;
-      auto tensorB = make_tensor(args.ptr_B, make_layout(make_shape(n, k, l), args.dB));
-      auto cluster = tiled_divide(make_layout(ClusterShape{}), make_tile(typename TiledMma::AtomThrID{}));
-      auto tmaB = make_tma_atom_B_sm100<ElementB>(GmemTiledCopyB{}, tensorB, SubSmemLayoutB{}(_, _, _, _0{}),
-                                                  SubTileShape{}, SubTiledMma{}, cluster);
-      return *tmaB.get_tma_descriptor();
-    }
+struct W8A16Mainloop {
+  struct Arguments {
+    const void* ptr_A = nullptr;
+    const void* ptr_B = nullptr;
+    const void* ptr_S = nullptr;
   };
 
-  struct Params : Base::Params {
-    cute::TmaDescriptor tma_desc_b_64;
-    cute::TmaDescriptor tma_desc_b_32;
+  struct alignas(1024) TensorStorage {
+    struct {
+      alignas(512) uint8_t smem_A[16384 * W8LoadStages];
+      alignas(1024) uint8_t smem_B[16384 * W8LoadStages];
+      uint8_t smem_scale[512 * W8LoadStages];
+      uint8_t reservedZero;
+    } input;
+    uint16_t reservedCompute;
   };
+  static_assert(sizeof(TensorStorage) == 167936 && alignof(TensorStorage) == 1024);
+  static_assert(offsetof(TensorStorage, input.smem_B) == 81920 && offsetof(TensorStorage, input.smem_scale) == 163840 &&
+                offsetof(TensorStorage, reservedCompute) == 166912);
 
-  const Params& params_;
-  uint32_t ctaRank_;
+  using Load2TransformPipeline = MoeW8WeightPipe<W8LoadStages>;
+  using Load2MmaPipeline = MoeTmaUmmaPipe<W8LoadStages, 2>;
+  using Transform2MmaPipeline = MoeW8TransformPipe<W8TransformStages>;
+  using Mma2AccumPipeline = MoeAccumulatorPipeline<W8AccumStages, 2>;
+  using Load2MmaPipelineState = typename Load2MmaPipeline::PipelineState;
+  using Load2TransformPipelineState = typename Load2TransformPipeline::PipelineState;
+  static constexpr uint32_t TmaTransactionBytes_A = 128 * 128 + 128 * 4;
+  static constexpr uint32_t TmaTransactionBytes_B = 128 * 128 * 2;
 
-  MSCCLPP_DEVICE_INLINE W8A16Mainloop(const Params& params, ClusterShape cluster, uint32_t ctaRank)
-      : Base(params, cluster, ctaRank), params_(params), ctaRank_(ctaRank) {}
+  struct Params {
+    MoeTmaSlot tma_load_scale, reservedZero, tma_load_a, tma_load_b, reservedA, reservedB;
+    dim3 reservedCluster{0, 0, 0};
+    uint32_t reservedTransactionBytes = TmaTransactionBytes_A + TmaTransactionBytes_B;
+    // Byte-compatible with the two dynamic strides of the old K-major carrier.
+    int64_t dA[2]{}, dB[2]{};
+    CUtensorMap tma_desc_b_64, tma_desc_b_32;
+  };
+  static_assert(sizeof(Params) == 1920 && alignof(Params) == 128);
+  static_assert(offsetof(Params, reservedCluster) == 1536 && offsetof(Params, dA) == 1552 &&
+                offsetof(Params, dB) == 1568 && offsetof(Params, tma_desc_b_32) == 1792);
 
-  __host__ __device__ static constexpr int mmaRows(int validRows) { return (validRows + 15) / 16 * 16; }
+  explicit __device__ W8A16Mainloop(uint32_t ctaRank) : ctaRank_(ctaRank) {}
 
-  static Params to_underlying_arguments(const ProblemShape& shape, const Arguments& args, void* workspace) {
-    return Params{Base::to_underlying_arguments(shape, args, workspace),
-                  SubtileActivationTma<64>::makeDescriptor(shape, args),
-                  SubtileActivationTma<32>::makeDescriptor(shape, args)};
+  static bool can_implement(const ProblemShape& shape, const Arguments& args) {
+    // K-major A/B and row-major scales, 16-byte vector alignment.
+    return shape.k % 16 == 0 && shape.m % 16 == 0 && args.ptr_S;
   }
 
-  MSCCLPP_DEVICE_INLINE auto load_init(const ProblemShape& shape, const Params& params,
-                                       TensorStorage& sharedTensors) const {
+  static Params to_underlying_arguments(const ProblemShape& shape, const Arguments& args, void*) {
+    auto [m, n, k, experts] = shape;
+    Params params{};
+    params.tma_load_a.map = makeDataMap<8, true, 128>(args.ptr_A, m, k, experts);
+    params.tma_load_b.map = makeActivationSubtileMap<2, 2, 128>(args.ptr_B, n, k, experts);
+    params.tma_load_scale.map = makeW8ScaleMap(args.ptr_S, m, k, experts);
+    params.dA[0] = k;
+    params.dA[1] = int64_t(m) * k;
+    params.dB[0] = k;
+    params.tma_desc_b_64 = makeActivationSubtileMap<2, 2, 64>(args.ptr_B, n, k, experts);
+    params.tma_desc_b_32 = makeActivationSubtileMap<2, 2, 32>(args.ptr_B, n, k, experts);
+    return params;
+  }
+
+  MSCCLPP_DEVICE_INLINE static void prefetch(const Params& params) {
     if (threadIdx.x % WARP_SIZE == 0) {
-      Base::prefetch_tma_descriptors(params);
-      cute::prefetch_tma_descriptor(&params.tma_desc_b_64);
-      cute::prefetch_tma_descriptor(&params.tma_desc_b_32);
+      prefetchMoeTma(&params.tma_load_a.map);
+      prefetchMoeTma(&params.tma_load_b.map);
+      prefetchMoeTma(&params.tma_load_scale.map);
+      prefetchMoeTma(&params.tma_desc_b_64);
+      prefetchMoeTma(&params.tma_desc_b_32);
     }
-    return Base::load_init(shape, params, sharedTensors);
   }
 
-  template <class LoadInputs, class Coord, class Iterator>
-  MSCCLPP_DEVICE_INLINE auto load_A(const Params& params, Load2TransformPipeline pipe,
-                                    Load2TransformPipelineState state, const LoadInputs& inputs, const Coord& coord,
-                                    Iterator kTileIter, int kTileCount, bool weightEvictNormal) const {
-    using namespace cute;
-    auto& tAgA_mkl = get<2>(inputs);
-    auto& tAsA = get<4>(inputs);
-    const uint16_t mcastMaskA = get<6>(inputs);
-    auto& extraPartitions = get<8>(inputs);
-    auto& tSgS_mkl = get<0>(extraPartitions);
-    auto& tSsS = get<1>(extraPartitions);
+  __host__ __device__ static constexpr uint32_t w8WeightTmemBase(uint32_t accumulator) {
+    return accumulatorStage(accumulator, W8AccumStages);
+  }
 
-    const int mTile = get<0>(coord) / size(typename TiledMma::AtomThrID{});
-    const int expert = get<3>(coord);
-    auto tAgA = tAgA_mkl(_, mTile, _, expert);
-    auto tSgS = tSgS_mkl(_, mTile, _, expert);
-
-    const auto weightHint =
-        weightEvictNormal ? cute::TMA::CacheHintSm90::EVICT_NORMAL : cute::TMA::CacheHintSm90::EVICT_FIRST;
-    uint32_t skipWait = (kTileCount <= 0);
-    auto pipeFlag = pipe.producer_try_acquire(state, skipWait);
-
-    CUTLASS_PRAGMA_NO_UNROLL
-    for (; kTileCount > 0; --kTileCount) {
-      pipe.producer_acquire(state, pipeFlag);
-      const int writeStage = state.index();
+  MSCCLPP_DEVICE_INLINE Load2TransformPipelineState load_A(const Params& params, Load2TransformPipeline pipe,
+                                                            Load2TransformPipelineState state, TensorStorage& shared,
+                                                            MoeTaskCoord coord, int kFirst, int kTiles,
+                                                            bool weightEvictNormal) const {
+    const int row = (coord.m / 2 * 2 + int(ctaRank_)) * 128;
+    const auto hint = weightEvictNormal ? MoeTmaCache::EVICT_NORMAL : MoeTmaCache::EVICT_FIRST;
+    auto ready = pipe.producer_try_acquire(state, kTiles <= 0);
+#pragma unroll 1
+    for (; kTiles > 0; --kTiles, ++kFirst) {
+      pipe.producer_acquire(state, ready);
+      const int stage = state.index();
       auto* barrier = pipe.producer_get_barrier(state);
       ++state;
-      skipWait = (kTileCount <= 1);
-      pipeFlag = pipe.producer_try_acquire(state, skipWait);
-
-      copy(params.tma_load_a.with(*barrier, mcastMaskA, weightHint), tAgA(_, *kTileIter), tAsA(_, writeStage));
-      copy(params.tma_load_scale.with(*barrier, mcastMaskA, weightHint), tSgS(_, *kTileIter), tSsS(_, writeStage));
-      ++kTileIter;
+      ready = pipe.producer_try_acquire(state, kTiles <= 1);
+      issueMoeTma<1>(&params.tma_load_a.map, barrier, shared.input.smem_A,
+                     dataTmaTile<128, 128>(stage, 0, row, kFirst, coord.expert), hint);
+      issueMoeTma<1>(&params.tma_load_scale.map, barrier, shared.input.smem_scale,
+                     w8ScaleTmaTile(stage, row, kFirst, coord.expert), hint);
     }
-    return cute::make_tuple(state, kTileIter);
+    return state;
   }
 
-  template <class LoadInputs, class Coord, class Iterator>
-  MSCCLPP_DEVICE_INLINE auto load_B(const Params& params, Load2MmaPipeline pipe, Load2MmaPipelineState state,
-                                    const LoadInputs& inputs, const Coord& coord, Iterator kTileIter, int kTileCount,
-                                    int validRows) const {
-    using namespace cute;
-    auto& tBgB_nkl = get<3>(inputs);
-    auto& tBsB = get<5>(inputs);
-    const uint16_t mcastMaskB = get<7>(inputs);
-
+  MSCCLPP_DEVICE_INLINE Load2MmaPipelineState load_B(const Params& params, Load2MmaPipeline pipe,
+                                                      Load2MmaPipelineState state, TensorStorage& shared,
+                                                      MoeTaskCoord coord, int kFirst, int kTiles, int validRows) const {
     const int ctaIdx = int(ctaRank_);
-    auto originalB = tBgB_nkl(_, get<1>(coord), _, get<3>(coord));
-    // A two-CTA MMA splits activation rows at its runtime N/2, not the allocated tile's N/2.
-    auto rowLayout = params.tma_load_b.get_tma_tensor(make_shape(1, 1, 1)).layout();
-    auto rowOffset = rowLayout(make_coord(ctaIdx * (mmaRows(validRows) - TileN) / 2, 0, 0));
-    auto tBgB = make_tensor(originalB.data() + rowOffset, originalB.layout());
-
-    const cute::TmaDescriptor* bDesc = params.tma_load_b.get_tma_descriptor();
-    uint32_t actTxBytes = Base::TmaTransactionBytes_B;
+    const int row = activationTmaRow<2>(coord.n, ctaIdx, validRows);
+    const CUtensorMap* bDesc = &params.tma_load_b.map;
+    uint32_t actTxBytes = TmaTransactionBytes_B;
     if (validRows <= 32) {
       bDesc = &params.tma_desc_b_32;
-      actTxBytes = SubtileActivationTma<32>::TransactionBytes;
+      actTxBytes = 32 * 128 * 2;
     } else if (validRows <= 64) {
       bDesc = &params.tma_desc_b_64;
-      actTxBytes = SubtileActivationTma<64>::TransactionBytes;
+      actTxBytes = 64 * 128 * 2;
     }
-
-    uint32_t skipWait = (kTileCount <= 0);
-    auto pipeFlag = pipe.producer_try_acquire(state, skipWait);
-
-    CUTLASS_PRAGMA_NO_UNROLL
-    for (; kTileCount > 0; --kTileCount) {
-      pipe.producer_acquire(state, pipeFlag);
-      const int writeStage = state.index();
+    auto ready = pipe.producer_try_acquire(state, kTiles <= 0);
+#pragma unroll 1
+    for (; kTiles > 0; --kTiles, ++kFirst) {
+      pipe.producer_acquire(state, ready);
+      const int stage = state.index();
       auto* barrier = pipe.producer_get_barrier(state);
-      if (ctaIdx == 0) cutlass::arch::ClusterTransactionBarrier::arrive_and_expect_tx(barrier, actTxBytes);
+      if (ctaIdx == 0) arriveMoeTmaExpect(barrier, actTxBytes);
       ++state;
-      skipWait = (kTileCount <= 1);
-      pipeFlag = pipe.producer_try_acquire(state, skipWait);
-
-      copy(params.tma_load_b.with(bDesc, *barrier, mcastMaskB), tBgB(_, *kTileIter), tBsB(_, writeStage));
-      ++kTileIter;
+      ready = pipe.producer_try_acquire(state, kTiles <= 1);
+#pragma unroll
+      for (int box = 0; box < 2; ++box)
+        issueMoeTma<2>(bDesc, barrier, shared.input.smem_B,
+                       dataTmaTile<128, 64, 64>(stage, box, row, kFirst, coord.expert), MoeTmaCache::EVICT_NORMAL);
     }
-    return cute::make_tuple(state, kTileIter);
+    return state;
   }
+
+ private:
+  uint32_t ctaRank_;
 };
 
 }  // namespace MSCCLPP_MEGAMOE_KERNEL_NAMESPACE::detail

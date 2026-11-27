@@ -4,8 +4,6 @@
 #ifndef MSCCLPP_EXT_MEGAMOE_DEVICE_CUH_
 #define MSCCLPP_EXT_MEGAMOE_DEVICE_CUH_
 
-#include <cutlass/fast_math.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <mscclpp/bulk_device.hpp>
@@ -17,6 +15,8 @@
 
 #include "megamoe_collective.cuh"
 #include "megamoe_kernel.hpp"
+#include "megamoe_primitives.cuh"
+#include "megamoe_trace.cuh"
 
 #if defined(__CUDA_ARCH__) && (!defined(__CUDA_ARCH_FAMILY_SPECIFIC__) || __CUDA_ARCH_FAMILY_SPECIFIC__ != 1000)
 #error "Native MegaMoE requires an SM100-family compilation target"
@@ -196,7 +196,7 @@ struct alignas(1024) W8A16SharedStorageT {
   typename Types::Transform::SharedStorage transformed;
   typename Types::Accumulate::SharedStorage accumulated;
   uint32_t tmem;
-  cutlass::arch::ClusterBarrier tmemReady;
+  uint64_t reservedTmemBarrier;  // Keep the established shared-memory offsets; no active owner.
   EpilogueStorage<Types::EpilogueTokens> epilogue;
   std::conditional_t<Types::LocalExpert, EmptyStorage, W4DispatchStorageT<Types>> dispatch;
 };
@@ -255,7 +255,7 @@ struct alignas(1024) W4A8SharedStorageT {
   std::conditional_t<Types::SplitPipelines, typename Types::Load::SharedStorage, EmptyStorage> activationLoad;
   typename Types::Accumulate::SharedStorage accumulated;
   uint32_t tmem;
-  cutlass::arch::ClusterBarrier tmemReady;
+  uint64_t reservedTmemBarrier;  // Keep the established shared-memory offsets; no active owner.
   EpilogueStorage<Types::EpilogueTokens> epilogue;
   W4DispatchStorageT<Types> dispatch;
   OutputOffloadTask outputOffloadTask;
@@ -279,8 +279,8 @@ struct KernelParameters {
   Resource<Workspace> workspace;
   void* local;
   const uint64_t* peers;
-  Resource<cutlass::FastDivmod> fc1TaskDivisor;
-  Resource<cutlass::FastDivmod> fc2TaskDivisor;
+  Resource<TaskDivmod> fc1TaskDivisor;
+  Resource<TaskDivmod> fc2TaskDivisor;
   Resource<typename Types::Mainloop::Params> fc1;
   Resource<typename Types::Mainloop::Params> fc2;
 };

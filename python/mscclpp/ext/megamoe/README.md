@@ -11,7 +11,6 @@ CUDA IPC communication. Only routed W4A8 execution is supported.
 
 - NVIDIA SM100-family GPU
 - CUDA toolkit and `nvcc` 13.0 or newer
-- A compatible CUTLASS checkout
 - One rank per GPU in the same active NVLink fabric
 
 Build with `MSCCLPP_BUILD_EXT_MEGAMOE=ON`. The installed JIT source bundle
@@ -88,7 +87,7 @@ Dynamic N is internal to the N128 kernel: activation TMA descriptors select
 N32/N64 loads for smaller blocks, and MMA rows round up to a multiple of 16.
 Other policy knobs, including load stages, remain configurable.
 
-Set `MSCCLPP_MEGAMOE_CUTLASS_ROOT` to the compatible CUTLASS checkout.
+Normal builds and JIT compilation do not require a CUTLASS checkout.
 `MSCCLPP_MEGAMOE_CACHE_DIR` optionally changes the content-addressed cache.
 `fixed_token_count=True` is intended for captured decode where every rank uses
 the same token-row count; route masks may still differ.

@@ -219,7 +219,7 @@ MSCCLPP_DEVICE_INLINE void storeDispatchChunkScales(const KernelParams& params, 
   __syncwarp();
   const int k = 4 * laneIdx;
   if (k < bytes / MxfpScaleBlockSize) {
-    const size_t offset = params.fc1.layout_SFB(cute::make_coord(storageRow, byteOffset + k * MxfpScaleBlockSize, 0));
+    const size_t offset = params.fc1.layout_SFB(storageRow, byteOffset + k * MxfpScaleBlockSize, 0);
     *reinterpret_cast<uint32_t*>(params.workspace.inputScale + offset) =
         *reinterpret_cast<const uint32_t*>(dispatch.scales[localWarp][stage] + k);
   }

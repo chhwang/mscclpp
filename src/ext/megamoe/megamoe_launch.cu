@@ -144,11 +144,8 @@ __global__ void packWeightsKernel(NativeConfig c, PackedWeights src, PackedWeigh
 }
 
 template <class Types>
-using W4ScaleLayout = typename Types::Mainloop::LayoutSFA;
-
-template <class Types>
 __global__ void packW4A8WeightsKernel(NativeConfig c, PackedWeights src, PackedWeights dst,
-                                      W4ScaleLayout<Types> fc1ScaleLayout, W4ScaleLayout<Types> fc2ScaleLayout) {
+                                      W4ScaleLayout fc1ScaleLayout, W4ScaleLayout fc2ScaleLayout) {
   size_t idx = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
   size_t stride = size_t(gridDim.x) * blockDim.x;
   int experts = c.numExperts / c.worldSize;
@@ -162,7 +159,7 @@ __global__ void packW4A8WeightsKernel(NativeConfig c, PackedWeights src, PackedW
     int m = row % (2 * c.intermediate);
     int expert = row / (2 * c.intermediate);
     int canonical = canonicalFc1Row(m, c.intermediate);
-    size_t destination = fc1ScaleLayout(cute::make_coord(m, k * 32, expert));
+    size_t destination = fc1ScaleLayout(m, k * 32, expert);
     dst.fc1Scale[destination] = src.fc1Scale[(size_t(expert) * 2 * c.intermediate + canonical) * (c.hidden / 32) + k];
   }
   size_t fc2Scales = fc2Rows * (c.intermediate / 32);
@@ -171,7 +168,7 @@ __global__ void packW4A8WeightsKernel(NativeConfig c, PackedWeights src, PackedW
     size_t row = i / (c.intermediate / 32);
     int m = row % c.hidden;
     int expert = row / c.hidden;
-    size_t destination = fc2ScaleLayout(cute::make_coord(m, k * 32, expert));
+    size_t destination = fc2ScaleLayout(m, k * 32, expert);
     dst.fc2Scale[destination] = src.fc2Scale[i];
   }
 }
@@ -373,28 +370,17 @@ __global__ __launch_bounds__(512, 2) void combineGeneralStandaloneKernel(const u
   }
 }
 
-template <class Types>
-W4ScaleLayout<Types> makeW4ScaleLayout(int m, int n, int k, int experts, bool activation) {
-  using namespace cute;
-  ProblemShape shape{m, n, k, experts};
-  if (!activation) return Types::ScaleConfig::tile_atom_to_shape_SFA(shape);
-  auto layout = Types::ScaleConfig::tile_atom_to_shape_SFB(shape);
-  return make_layout(cute::shape(layout), make_stride(get<0>(cute::stride(layout)), get<1>(cute::stride(layout)),
-                                                      make_stride(_0{}, int32_t(0))));
-}
-
 template <class P>
 P makeParameters(const NativeConfig& c, void* symmetric, const uint64_t* peers, void* workspace,
                  const PackedWeights& weights) {
-  using namespace cute;
   using Mainloop = typename P::Collective::Mainloop;
   P p{};
   p.config = c;
   p.symmetric = getSymmetricLayout(c);
   p.local = symmetric;
   p.peers = peers;
-  p.fc1TaskDivisor = cutlass::FastDivmod(2 * c.intermediate / P::Tiles::M);
-  p.fc2TaskDivisor = cutlass::FastDivmod((c.hidden + P::Tiles::M - 1) / P::Tiles::M);
+  p.fc1TaskDivisor = TaskDivmod(2 * c.intermediate / P::Tiles::M);
+  p.fc2TaskDivisor = TaskDivmod((c.hidden + P::Tiles::M - 1) / P::Tiles::M);
   size_t bytes;
   p.workspace = workspaceLayout(c, workspace, bytes);
   int experts = c.numExperts / c.worldSize;
@@ -402,17 +388,15 @@ P makeParameters(const NativeConfig& c, void* symmetric, const uint64_t* peers, 
                   uint8_t* inputScale = nullptr) {
     ProblemShape shape{m, rows, k, experts};
     typename Mainloop::Arguments args{};
-    args.ptr_A = reinterpret_cast<decltype(args.ptr_A)>(weight);
-    args.dA = make_stride(int64_t(k), _1{}, int64_t(m) * k);
-    args.ptr_B = reinterpret_cast<decltype(args.ptr_B)>(input);
-    args.dB = make_stride(int64_t(k), _1{}, int64_t(0));
+    args.ptr_A = weight;
+    args.ptr_B = input;
     if constexpr (P::WeightMxfp4) {
-      args.ptr_SFA = reinterpret_cast<decltype(args.ptr_SFA)>(weightScale);
-      args.layout_SFA = makeW4ScaleLayout<typename P::Collective>(m, rows, k, experts, false);
-      args.ptr_SFB = reinterpret_cast<decltype(args.ptr_SFB)>(inputScale);
-      args.layout_SFB = makeW4ScaleLayout<typename P::Collective>(m, rows, k, experts, true);
-      const size_t actualSfaBytes = size_t(cosize(args.layout_SFA));
-      const size_t actualSfbBytes = size_t(cosize(args.layout_SFB));
+      args.ptr_SFA = weightScale;
+      args.layout_SFA = W4ScaleLayout::make(m, k, experts, false);
+      args.ptr_SFB = inputScale;
+      args.layout_SFB = W4ScaleLayout::make(rows, k, experts, true);
+      const size_t actualSfaBytes = args.layout_SFA.bytes();
+      const size_t actualSfbBytes = args.layout_SFB.bytes();
       const size_t expectedSfaBytes = size_t(m) * (k / 32) * experts;
       const size_t expectedSfbBytes = blockScaleBytes(rows, k);
       if (actualSfaBytes != expectedSfaBytes || actualSfbBytes != expectedSfbBytes)
@@ -420,8 +404,7 @@ P makeParameters(const NativeConfig& c, void* symmetric, const uint64_t* peers, 
                                     std::to_string(actualSfaBytes) + "/" + std::to_string(expectedSfaBytes) + ", SFB " +
                                     std::to_string(actualSfbBytes) + "/" + std::to_string(expectedSfbBytes));
     } else {
-      args.ptr_S = reinterpret_cast<decltype(args.ptr_S)>(weightScale);
-      args.layout_S = W8ScaleConfig::tile_atom_to_shape_scale(make_shape(m, k, experts));
+      args.ptr_S = weightScale;
     }
     if (!Mainloop::can_implement(shape, args))
       throw std::invalid_argument(P::WeightMxfp4 ? "MegaMoE W4A8 TMA input layout is unsupported"
@@ -562,11 +545,11 @@ void packNativeWeights(const NativeConfig& c, const PackedWeights& source, const
   if (c.weightDtype == WeightDtype::Mxfp4) {
     int experts = c.numExperts / c.worldSize;
     auto fc1ScaleLayout =
-        detail::makeW4ScaleLayout<detail::W4A8CollectiveTypes>(2 * c.intermediate, 1, c.hidden, experts, false);
+        detail::W4ScaleLayout::make(2 * c.intermediate, c.hidden, experts, false);
     auto fc2ScaleLayout =
-        detail::makeW4ScaleLayout<detail::W4A8CollectiveTypes>(c.hidden, 1, c.intermediate, experts, false);
-    if (size_t(cute::cosize(fc1ScaleLayout)) != size_t(experts) * 2 * c.intermediate * (c.hidden / 32) ||
-        size_t(cute::cosize(fc2ScaleLayout)) != size_t(experts) * c.hidden * (c.intermediate / 32))
+        detail::W4ScaleLayout::make(c.hidden, c.intermediate, experts, false);
+    if (fc1ScaleLayout.bytes() != size_t(experts) * 2 * c.intermediate * (c.hidden / 32) ||
+        fc2ScaleLayout.bytes() != size_t(experts) * c.hidden * (c.intermediate / 32))
       throw std::invalid_argument("MegaMoE W4A8 weight-scale layout size is unsupported");
     detail::packW4A8WeightsKernel<detail::W4A8CollectiveTypes>
         <<<256, 256, 0, stream>>>(c, source, destination, fc1ScaleLayout, fc2ScaleLayout);

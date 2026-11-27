@@ -89,7 +89,7 @@ def test_builtin_requires_neither_compiler_nor_gpu(monkeypatch):
 
 @pytest.fixture
 def compiler_fixture(tmp_path, monkeypatch):
-    package, source, cutlass, cuda = [tmp_path / name for name in ("package", "source", "cutlass", "cuda")]
+    package, source, cuda = [tmp_path / name for name in ("package", "source", "cuda")]
     for path in (
         package / "include/mscclpp/version.hpp",
         package / "lib/libmscclpp.so.0",
@@ -97,13 +97,12 @@ def compiler_fixture(tmp_path, monkeypatch):
         source / "megamoe_launch.cu",
         source / "megamoe_jit.cu",
         source / "include/megamoe_kernel.hpp",
-        cutlass / "include/cutlass/gemm/collective/sm100_blockscaled_mma_warpspecialized.hpp",
         cuda / "lib64/libcudart.so",
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("fixture")
     monkeypatch.setenv("CUDA_HOME", str(cuda))
-    monkeypatch.setenv("MSCCLPP_MEGAMOE_CUTLASS_ROOT", str(cutlass))
+    monkeypatch.delenv("MSCCLPP_MEGAMOE_CUTLASS_ROOT", raising=False)
     monkeypatch.setenv("MSCCLPP_MEGAMOE_CUDA_INCLUDE_DIRS", "")
     monkeypatch.setattr(jit, "_package_root", lambda: package)
     monkeypatch.setattr(jit, "_source_root", lambda: source)
@@ -117,7 +116,7 @@ def compiler_fixture(tmp_path, monkeypatch):
         Path(command[command.index("-o") + 1]).write_bytes(b"compiled_fixture")
 
     monkeypatch.setattr(jit, "_run", run)
-    return tmp_path / "cache", commands, cutlass
+    return tmp_path / "cache", commands, package
 
 
 def _tuned(**overrides):
@@ -273,14 +272,24 @@ def test_cache_only_loading_does_not_invoke_compiler(compiler_fixture, monkeypat
 
 
 def test_changed_headers_or_config_get_new_cache_key(compiler_fixture):
-    cache, commands, cutlass = compiler_fixture
+    cache, commands, package = compiler_fixture
     first = jit.compile_kernel(_tuned(), cache_dir=cache)
-    header = cutlass / "include/cutlass/gemm/collective/sm100_blockscaled_mma_warpspecialized.hpp"
+    header = package / "include/mscclpp/version.hpp"
     header.write_text("changed header")
     second = jit.compile_kernel(_tuned(), cache_dir=cache)
     third = jit.compile_kernel(_tuned(load_stages=6), cache_dir=cache)
     assert len({first.key, second.key, third.key}) == 3
     assert len(commands) == 12
+
+
+def test_legacy_cutlass_inputs_are_ignored(compiler_fixture, monkeypatch, tmp_path):
+    cache, commands, _ = compiler_fixture
+    first = jit.compile_kernel(_tuned(), cache_dir=cache)
+    monkeypatch.setenv("MSCCLPP_MEGAMOE_CUTLASS_ROOT", str(tmp_path / "missing-env"))
+    second = jit.compile_kernel(_tuned(), cache_dir=cache, cutlass_root=tmp_path / "missing-explicit")
+    assert first.key == second.key and second.cache_hit
+    assert len(commands) == 4
+    assert not any("missing-" in arg for command in commands for arg in command)
 
 
 def test_corrupt_or_stale_cache_is_rejected(compiler_fixture, monkeypatch):

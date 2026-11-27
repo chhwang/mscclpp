@@ -172,10 +172,9 @@ MSCCLPP_DEVICE_INLINE int taskKTiles(const KernelParams&, const Task& task, int 
 }
 
 template <class KernelParams>
-MSCCLPP_DEVICE_INLINE auto taskCoord(const KernelParams&, const Task& task, int ctaIdx) {
+MSCCLPP_DEVICE_INLINE MoeTaskCoord taskCoord(const KernelParams&, const Task& task, int ctaIdx) {
   constexpr int BlockStride = KernelParams::Tiles::TokenStride / KernelParams::Tiles::N;
-  return cute::make_coord(task.m * KernelParams::Tiles::ClusterSize + ctaIdx, task.block * BlockStride, 0,
-                          task.tokens.expertIdx);
+  return {task.m * KernelParams::Tiles::ClusterSize + ctaIdx, task.block * BlockStride, task.tokens.expertIdx};
 }
 
 }  // namespace MSCCLPP_MEGAMOE_KERNEL_NAMESPACE::detail

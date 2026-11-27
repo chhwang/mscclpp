@@ -20,7 +20,7 @@ import time
 
 _ARCHITECTURES = {(10, 0): "sm_100f", (10, 3): "sm_100f", (10, 7): "sm_100f"}
 _CACHE_FORMAT_VERSION = 3
-_BUILD_FORMAT_VERSION = 3
+_BUILD_FORMAT_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -383,10 +383,10 @@ def _run(command, log, timeout):
 def compile_kernel(config, *, cache_dir=None, nvcc=None, cutlass_root=None, timeout=600):
     """Compile one specialization once per host/cache, outside collective construction.
 
-    Set ``MSCCLPP_MEGAMOE_NVCC`` (nvcc >=13.0),
-    ``MSCCLPP_MEGAMOE_CUTLASS_ROOT``, and optionally ``CUDA_HOME``.
+    Set ``MSCCLPP_MEGAMOE_NVCC`` (nvcc >=13.0) or ``CUDA_HOME`` if needed.
     ``MSCCLPP_MEGAMOE_CUDA_INCLUDE_DIRS`` supplies path-separated matching runtime
     include directories when compiler and runtime packages are installed separately.
+    ``cutlass_root`` is accepted for compatibility and ignored.
     """
     if not isinstance(config, W4A8KernelConfig):
         raise TypeError("config must be W4A8KernelConfig")
@@ -409,12 +409,6 @@ def compile_kernel(config, *, cache_dir=None, nvcc=None, cutlass_root=None, time
     )
     if not (include_root / "mscclpp/version.hpp").is_file():
         raise FileNotFoundError(f"MSCCL++ development headers are required: {include_root}")
-    cutlass_value = cutlass_root or os.environ.get("MSCCLPP_MEGAMOE_CUTLASS_ROOT")
-    if cutlass_value is None:
-        raise ValueError("Set MSCCLPP_MEGAMOE_CUTLASS_ROOT to the compatible CUTLASS checkout")
-    cutlass = Path(cutlass_value).expanduser().resolve() / "include"
-    if not (cutlass / "cutlass/gemm/collective/sm100_blockscaled_mma_warpspecialized.hpp").is_file():
-        raise FileNotFoundError(f"SM100-family block-scaled CUTLASS headers not found: {cutlass}")
     cuda_root = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda")).expanduser().resolve()
     compiler = _tool(nvcc or os.environ.get("MSCCLPP_MEGAMOE_NVCC", str(cuda_root / "bin/nvcc")), "nvcc")
     cxx = _tool(os.environ.get("CXX", "c++"), "C++ compiler")
@@ -445,7 +439,6 @@ def compile_kernel(config, *, cache_dir=None, nvcc=None, cutlass_root=None, time
         "environment": environment,
         "compiler": compiler_version,
         "cxx": _version(cxx),
-        "cutlass_headers_sha256": _tree_hash(cutlass, {".h", ".hpp", ".cuh", ".inl"}),
         "mscclpp_headers_sha256": _tree_hash(include_root, {".h", ".hpp", ".cuh", ".inl"}),
         "extra_cuda_headers_sha256": [_tree_hash(path, {".h", ".hpp", ".cuh", ".inl"}) for path in extra_includes],
         "ambient_headers_sha256": [_tree_hash(path, {".h", ".hpp", ".cuh", ".inl"}) for path in ambient_includes],
@@ -484,7 +477,7 @@ def compile_kernel(config, *, cache_dir=None, nvcc=None, cutlass_root=None, time
                 f'-DMSCCLPP_MEGAMOE_JIT_ID="{key}"',
                 *definitions,
             ]
-            for include in (*extra_includes, checkout_include, include_root, source_root / "include", cutlass):
+            for include in (*extra_includes, checkout_include, include_root, source_root / "include"):
                 command.extend(["-I", str(include)])
             commands = [
                 [*command, "-c", str(source), "-o", str(obj)] for source, obj in zip(sources, objects, strict=True)
